@@ -806,9 +806,9 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
     // Check router contract did send me enough tokens.
     // If Router sent to much tokens, take them as reserve money&stock
     function _checkRemainAmount(Context memory ctx, bool isBuy) private {
-	if(msg.value != 0) {
+        if(msg.value != 0) {
             IWETH(_immuWETH).deposit{value: msg.value}();
-	}
+        }
         ctx.reserveChanged = false;
         uint diff;
         if(isBuy) {
