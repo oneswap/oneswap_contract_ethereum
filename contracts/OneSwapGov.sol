@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL
-pragma solidity ^0.6.0;
+pragma solidity ^0.6.6;
 
 import "./interfaces/IOneSwapToken.sol";
 import "./interfaces/IOneSwapGov.sol";

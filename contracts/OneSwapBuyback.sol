@@ -24,7 +24,7 @@ contract OneSwapBuyback is IOneSwapBuyback {
         router = _router;
         factory = _factory;
 
-        // add WETH to main token list
+        // add WETH & ONES to main token list
         _mainTokens[_ones] = true;
         _mainTokenArr.push(_ones);
         _mainTokens[_weth] = true;
@@ -47,7 +47,7 @@ contract OneSwapBuyback is IOneSwapBuyback {
         if (_mainTokens[token]) {
             _mainTokens[token] = false;
             uint256 lastIdx = _mainTokenArr.length - 1;
-            for (uint256 i = 1; i < lastIdx; i++) { // skip WETH (idx 0)
+            for (uint256 i = 0; i < lastIdx; i++) {
                 if (_mainTokenArr[i] == token) {
                     _mainTokenArr[i] = _mainTokenArr[lastIdx];
                     break;
@@ -73,15 +73,17 @@ contract OneSwapBuyback is IOneSwapBuyback {
         }
     }
     function _removeLiquidity(address pair) private {
+        (address a, address b) = IOneSwapFactory(factory).getTokensFromPair(pair);
+        require(a != address(0) && b != address(0), "OneSwapBuyback: INVALID_PAIR");
+
         uint256 amt = IERC20(pair).balanceOf(address(this));
-        require(amt > 0, "OneSwapBuyback: NO_LIQUIDITYS");
+        require(amt > 0, "OneSwapBuyback: NO_LIQUIDITY");
 
         IERC20(pair).approve(router, amt);
         IOneSwapRouter(router).removeLiquidity(
             pair, amt, 0, 0, address(this), _MAX_UINT256);
 
         // minor -> main
-        (address a, address b) = IOneSwapFactory(factory).getTokensFromPair(pair);
         bool aIsMain = _mainTokens[a];
         bool bIsMain = _mainTokens[b];
         if ((aIsMain && !bIsMain) || (!aIsMain && bIsMain)) {
@@ -97,6 +99,7 @@ contract OneSwapBuyback is IOneSwapBuyback {
     }
     function _swapForMainToken(address pair) private {
         (address a, address b) = IOneSwapFactory(factory).getTokensFromPair(pair);
+        require(a != address(0) && b != address(0), "OneSwapBuyback: INVALID_PAIR");
 
         address mainToken;
         address minorToken;
@@ -133,6 +136,7 @@ contract OneSwapBuyback is IOneSwapBuyback {
     }
     function _swapForOnesAndBurn(address pair) private {
         (address a, address b) = IOneSwapFactory(factory).getTokensFromPair(pair);
+        require(a != address(0) && b != address(0), "OneSwapBuyback: INVALID_PAIR");
         require(a == ones || b == ones, "OneSwapBuyback: ONES_NOT_IN_PAIR");
 
         address token = (a == ones) ? b : a;

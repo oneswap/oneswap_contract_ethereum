@@ -6,12 +6,12 @@ import "./interfaces/IOneSwapFactory.sol";
 import "./interfaces/IOneSwapPair.sol";
 import "./interfaces/IWETH.sol";
 import "./interfaces/IERC20.sol";
-import "./libraries/SafeMath.sol";
+import "./libraries/SafeMath256.sol";
 import "./libraries/DecFloat32.sol";
 
 
 contract OneSwapRouter is IOneSwapRouter {
-    using SafeMath for uint;
+    using SafeMath256 for uint;
     address public immutable override factory;
     address public immutable override weth;
 
@@ -105,6 +105,8 @@ contract OneSwapRouter is IOneSwapRouter {
 
     function removeLiquidity(address pair, uint liquidity, uint amountStockMin, uint amountMoneyMin,
         address to, uint deadline) external override ensure(deadline) returns (uint amountStock, uint amountMoney) {
+        // ensure pair exist
+        _getTokensFromPair(pair);
         (amountStock, amountMoney) = _removeLiquidity(pair, liquidity, amountStockMin, amountMoneyMin, to);
     }
 
@@ -145,6 +147,8 @@ contract OneSwapRouter is IOneSwapRouter {
         address to, uint deadline) external override ensure(deadline) returns (uint[] memory amounts) {
 
         require(path.length >= 1, "OneSwapRouter: INVALID_PATH");
+        // ensure pair exist
+        _getTokensFromPair(path[0]);
         _safeTransferFrom(token, msg.sender, path[0], amountIn);
         amounts = _swap(token, amountIn, path, to);
         require(amounts[path.length] >= amountOutMin, "OneSwapRouter: INSUFFICIENT_OUTPUT_AMOUNT");
@@ -154,6 +158,8 @@ contract OneSwapRouter is IOneSwapRouter {
         uint deadline) external payable override ensure(deadline) returns (uint[] memory amounts) {
 
         require(path.length >= 1, "OneSwapRouter: INVALID_PATH");
+        // ensure pair exist
+        _getTokensFromPair(path[0]);
         IWETH(weth).deposit{value: msg.value}();
         assert(IWETH(weth).transfer(path[0], msg.value));
         amounts = _swap(weth, msg.value, path, to);

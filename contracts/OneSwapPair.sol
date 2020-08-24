@@ -2,7 +2,7 @@
 pragma solidity ^0.6.6;
 
 import "./libraries/Math.sol";
-import "./libraries/SafeMath.sol";
+import "./libraries/SafeMath256.sol";
 import "./libraries/DecFloat32.sol";
 import "./interfaces/IOneSwapFactory.sol";
 import "./interfaces/IOneSwapPair.sol";
@@ -10,7 +10,7 @@ import "./interfaces/IERC20.sol";
 import "./interfaces/IWETH.sol";
 
 abstract contract OneSwapERC20 is IERC20 {
-    using SafeMath for uint;
+    using SafeMath256 for uint;
 
     string private constant _NAME = "OneSwap-Liquidity-Share";
     uint8 private constant _DECIMALS = 18;
@@ -115,7 +115,7 @@ struct Context {
 
 // OneSwapPair combines a Uniswap-like AMM and an orderbook
 abstract contract OneSwapPool is OneSwapERC20, IOneSwapPool {
-    using SafeMath for uint;
+    using SafeMath256 for uint;
 
     uint private constant _MINIMUM_LIQUIDITY = 10 ** 3;
     bytes4 internal constant _SELECTOR = bytes4(keccak256(bytes("transfer(address,uint256)")));
@@ -520,7 +520,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         require(ok, "OneSwap: NO_SUCH_ORDER");
         if(prevKey == 0) {
             uint32 firstID = _getFirstOrderID(ctx, isBuy);
-            require(id == firstID, "OneSwap: INVALID_POSITION");
+            require(id == firstID, "OneSwap: NOT_FIRST");
             _setFirstOrderID(ctx, isBuy, order.nextID);
             if(!isBuy) {
                 _setReserves(ctx.reserveStock, ctx.reserveMoney, ctx.firstSellID);
@@ -530,7 +530,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
             require(findIt, "OneSwap: INVALID_POSITION");
             while(prevOrder.nextID != id) {
                 currID = prevOrder.nextID;
-                require(currID != 0, "OneSwap: INVALID_POSITION");
+                require(currID != 0, "OneSwap: REACH_END");
                 (prevOrder, ) = _getOrder(isBuy, currID);
             }
             prevOrder.nextID = order.nextID;
@@ -922,7 +922,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
     // Current order tries to deal against the AMM pool. Returns whether current order fully deals.
     function _tryDealInPool(Context memory ctx, bool isBuy, RatPrice memory price) private view returns (bool) {
         uint currTokenCanTrade = _intopoolAmountTillPrice(isBuy, ctx.reserveMoney, ctx.reserveStock, price);
-        require(currTokenCanTrade < uint(1<<112), "OneSwap: OVERFLOW");
+        require(currTokenCanTrade < uint(1<<112), "OneSwap: CURR_TOKEN_TOO_LARGE");
         // all the below variables are less t han 112 bits
         if(!isBuy) {
             currTokenCanTrade /= _immuStockUnit; //to round
@@ -956,7 +956,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         if(uint(orderInBook.amount) < stockAmount) {
             stockAmount = uint(orderInBook.amount);
         }
-        require(stockAmount < (1<<42), "OneSwap: OVERFLOW");
+        require(stockAmount < (1<<42), "OneSwap: STOCK_TOO_LARGE");
         uint stockTrans = stockAmount/*42bits*/ * _immuStockUnit/*64bits*/;
         uint moneyTrans = stockTrans * priceInBook.numerator/*54+64bits*/ / priceInBook.denominator/*76+64bits*/;
 
@@ -997,7 +997,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         // the token amount that should go to the taker, 
         // for buy-order, it's stock amount; for sell-order, it's money amount
         uint amountToTaker = outAmount + otherToTaker;
-        require(amountToTaker < uint(1<<112), "OneSwap: OVERFLOW");
+        require(amountToTaker < uint(1<<112), "OneSwap: AMOUNT_TOO_LARGE");
         uint fee = amountToTaker * feeBPS / 10000;
         amountToTaker -= fee;
 
@@ -1025,14 +1025,13 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
             uint temp = _immuStockUnit * price.numerator/*54+64bits*/;
             stockAmount = tempAmount1 / temp;
             uint tempAmount2 = stockAmount * temp; // Now tempAmount1 >= tempAmount2
-            moneyAmount = tempAmount2/price.denominator; //Now ctx.remainAmount >= moneyAmount
-            moneyAmount += 1;
+            moneyAmount = (tempAmount2+price.denominator-1)/price.denominator; // round up
             if(ctx.remainAmount > moneyAmount) {
                 // smallAmount is the gap where remainAmount can not buy an integer of stocks
                 smallAmount = ctx.remainAmount - moneyAmount;
             } else {
                 moneyAmount = ctx.remainAmount;
-            }
+            } //Now ctx.remainAmount >= moneyAmount
         } else {
             // for sell orders, remainAmount were always decreased by integral multiple of _immuStockUnit
             // and we know for sure that ctx.remainAmount % _immuStockUnit == 0
