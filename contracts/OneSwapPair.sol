@@ -930,7 +930,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         }
         if(currTokenCanTrade > ctx.amountIntoPool) {
             uint diffTokenCanTrade = currTokenCanTrade - ctx.amountIntoPool;
-            bool allDeal = diffTokenCanTrade > ctx.remainAmount;
+            bool allDeal = diffTokenCanTrade >= ctx.remainAmount;
             if(allDeal) {
                 diffTokenCanTrade = ctx.remainAmount;
             }
