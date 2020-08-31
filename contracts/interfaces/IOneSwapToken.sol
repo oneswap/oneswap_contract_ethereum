@@ -9,9 +9,11 @@ interface IOneSwapBlackList {
     event RemovedBlackLists(address[]);
 
     function owner()external view returns (address);
+    function newOwner()external view returns (address);
     function isBlackListed(address)external view returns (bool);
 
-    function changeOwner(address newOwner) external;
+    function changeOwner(address ownerToSet) external;
+    function updateOwner() external;
     function addBlackLists(address[] calldata  accounts)external;
     function removeBlackLists(address[] calldata  accounts)external;
 }

@@ -2,7 +2,7 @@
 pragma solidity ^0.6.6;
 
 import "./interfaces/IOneSwapFactory.sol";
-import "./OneSwapPair.sol";
+import "./OneSwapPairPXY.sol";
 
 contract OneSwapFactory is IOneSwapFactory {
     struct TokensInPair {
@@ -13,23 +13,25 @@ contract OneSwapFactory is IOneSwapFactory {
     address public override feeTo;
     address public override feeToSetter;
     address public immutable gov;
-    address public immutable weth;
+    address public immutable ones;
     uint32 public override feeBPS = 50;
+    address public override pairLogic;
     mapping(address => TokensInPair) private _pairWithToken;
     mapping(bytes32 => address) private _tokensToPair;
     address[] public allPairs;
 
-    constructor(address _feeToSetter, address _gov, address _weth) public {
+    constructor(address _feeToSetter, address _gov, address _ones, address _pairLogic) public {
         feeToSetter = _feeToSetter;
-        weth = _weth;
         gov = _gov;
+        ones = _ones;
+		pairLogic = _pairLogic;
     }
 
     function createPair(address stock, address money, bool isOnlySwap) external override returns (address pair) {
         require(stock != money, "OneSwapFactory: IDENTICAL_ADDRESSES");
-        require(stock != address(0) && money != address(0), "OneSwapFactory: ZERO_ADDRESS");
-        uint moneyDec = uint(IERC20(money).decimals());
-        uint stockDec = uint(IERC20(stock).decimals());
+        require(stock != address(0) || money != address(0), "OneSwapFactory: ZERO_ADDRESS");
+        uint moneyDec = getDecimals(money);
+        uint stockDec = getDecimals(stock);
         require(23 >= stockDec && stockDec >= 0, "OneSwapFactory: STOCK_DECIMALS_NOT_SUPPORTED");
         uint dec = 0;
         if(stockDec >= 4) {
@@ -57,13 +59,18 @@ contract OneSwapFactory is IOneSwapFactory {
         require(!differenceTooLarge, "OneSwapFactory: DECIMALS_DIFF_TOO_LARGE");
         bytes32 salt = keccak256(abi.encodePacked(stock, money, isOnlySwap));
         require(_tokensToPair[salt] == address(0), "OneSwapFactory: PAIR_EXISTS");
-        OneSwapPair oneswap = new OneSwapPair{salt: salt}(weth, stock, money, isOnlySwap, uint64(uint(10)**dec), priceMul, priceDiv);
+        OneSwapPairProxy oneswap = new OneSwapPairProxy{salt: salt}(stock, money, isOnlySwap, uint64(uint(10)**dec), priceMul, priceDiv, ones);
 
         pair = address(oneswap);
         allPairs.push(pair);
         _tokensToPair[salt] = pair;
         _pairWithToken[pair] = TokensInPair(stock, money);
         emit PairCreated(pair, stock, money, isOnlySwap);
+    }
+
+    function getDecimals(address token) private view returns (uint){
+        if (token == address(0)){ return 18;}
+        return uint(IERC20(token).decimals());
     }
 
     function allPairsLength() external override view returns (uint) {
@@ -78,6 +85,11 @@ contract OneSwapFactory is IOneSwapFactory {
     function setFeeToSetter(address _feeToSetter) external override {
         require(msg.sender == feeToSetter, "OneSwapFactory: FORBIDDEN");
         feeToSetter = _feeToSetter;
+    }
+
+    function setPairLogic(address implLogic) external override {
+        require(msg.sender == gov, "OneSwapFactory: SETTER_MISMATCH");
+        pairLogic = implLogic;
     }
 
     function setFeeBPS(uint32 _bps) external override {

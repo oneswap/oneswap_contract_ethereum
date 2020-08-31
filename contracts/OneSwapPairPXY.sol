@@ -4,13 +4,23 @@ pragma solidity ^0.6.6;
 import "./libraries/Math.sol";
 import "./libraries/SafeMath256.sol";
 import "./libraries/DecFloat32.sol";
+import "./libraries/ProxyData.sol";
 import "./interfaces/IOneSwapFactory.sol";
-import "./interfaces/IOneSwapPair.sol";
+import "./interfaces/IOneSwapToken.sol";
+import "./interfaces/IOneSwapPairPXY.sol";
 import "./interfaces/IERC20.sol";
-import "./interfaces/IWETH.sol";
 
-abstract contract OneSwapERC20 is IERC20 {
+abstract contract OneSwapERC20Impl is IERC20Impl {
     using SafeMath256 for uint;
+
+    uint internal _unlocked = 1;
+
+    modifier lock() {
+        require(_unlocked == 1, "OneSwap: LOCKED");
+        _unlocked = 0;
+        _;
+        _unlocked = 1;
+    }
 
     string private constant _NAME = "OneSwap-Liquidity-Share";
     uint8 private constant _DECIMALS = 18;
@@ -18,7 +28,7 @@ abstract contract OneSwapERC20 is IERC20 {
     mapping(address => uint) public override balanceOf;
     mapping(address => mapping(address => uint)) public override allowance;
 
-    function symbol() virtual external view override returns (string memory);
+    function symbol() virtual external override returns (string memory);
 
     function name() external view override returns (string memory) {
         return _NAME;
@@ -81,8 +91,6 @@ struct Order { //total 256 bits
 
 // When the match engine of orderbook runs, it uses follow context to cache data in memory
 struct Context {
-    // this is the last stop of a multi-stop swap path
-    bool isLastSwap;
     // this order is a limit order
     bool isLimitOrder;
     // the new order's id, it is only used when a limit order is not fully dealt
@@ -111,21 +119,22 @@ struct Context {
     bool hasDealtInOrderBook;
     // the current taker order
     Order order;
+    // the following data come from proxy
+    uint64 stockUnit;
+    uint64 priceMul;
+    uint64 priceDiv;
+    address stockToken;
+    address moneyToken;
+    address ones;
+    address factory;
 }
 
 // OneSwapPair combines a Uniswap-like AMM and an orderbook
-abstract contract OneSwapPool is OneSwapERC20, IOneSwapPool {
+abstract contract OneSwapPoolImpl is OneSwapERC20Impl, IOneSwapPoolImpl {
     using SafeMath256 for uint;
 
     uint private constant _MINIMUM_LIQUIDITY = 10 ** 3;
     bytes4 internal constant _SELECTOR = bytes4(keccak256(bytes("transfer(address,uint256)")));
-
-    // these immutable variables are initialized by factory contract
-    address internal immutable _immuWETH;
-    address internal immutable _immuFactory;
-    address internal immutable _immuMoneyToken;
-    address internal immutable _immuStockToken;
-    bool internal immutable _immuIsOnlySwap;
 
     // reserveMoney and reserveStock are both uint112, id is 22 bits; they are compressed into a uint256 word
     uint internal _reserveStockAndMoneyAndFirstSellID;
@@ -137,23 +146,23 @@ abstract contract OneSwapPool is OneSwapERC20, IOneSwapPool {
     uint32 private constant _OS = 2; // owner's share
     uint32 private constant _LS = 3; // liquidity-provider's share
 
-    uint internal _unlocked = 1;
-    modifier lock() {
-        require(_unlocked == 1, "OneSwap: LOCKED");
-        _unlocked = 0;
-        _;
-        _unlocked = 1;
-    }
-
-    function internalStatus() external view returns(uint[3] memory res) {
+    function internalStatus() external override view returns(uint[3] memory res) {
         res[0] = _reserveStockAndMoneyAndFirstSellID;
         res[1] = _bookedStockAndMoneyAndFirstBuyID;
         res[2] = _kLast;
     }
 
-    function stock() external view override returns (address) {return _immuStockToken;}
+    function stock() external override returns (address) {
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.Count+0));
+        return address(proxyData[ProxyData.IndexStockToken]);
+    }
 
-    function money() external view override returns (address) {return _immuMoneyToken;}
+    function money() external override returns (address) {
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.Count+0));
+        return address(proxyData[ProxyData.IndexMoneyToken]);
+    }
 
     // the following 4 functions load&store compressed storage
     function getReserves() public override view returns (uint112 reserveStock, uint112 reserveMoney, uint32 firstSellID) {
@@ -180,30 +189,32 @@ abstract contract OneSwapPool is OneSwapERC20, IOneSwapPool {
         _bookedStockAndMoneyAndFirstBuyID = (uint(firstBuyID)<<224)|(moneyAmount<<112)|stockAmount;
     }
 
-    // safely transfer ERC20 tokens
-    function _safeTransfer(address token, address to, uint value) internal {
-        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(_SELECTOR, to, value));
-        require(success && (data.length == 0 || abi.decode(data, (bool))), "OneSwap: TRANSFER_FAILED");
-    }
-
-    // when orderbook transfer tokens to takers and makers, WETH is automatically changed into ETH, 
-    // if this is the last stop of a multi-stop swap path
-    function _transferToken(address token, address to, uint amount, bool isLastPath) internal {
-        if (token == _immuWETH && isLastPath) {
-            IWETH(_immuWETH).withdraw(amount);
-            _safeTransferETH(to, amount);
+    function _myBalance(address token) internal view returns (uint) {
+        if(token==address(0)) {
+            return address(this).balance;
         } else {
-            _safeTransfer(token, to, amount);
+            return IERC20(token).balanceOf(address(this));
         }
     }
-    function _safeTransferETH(address to, uint value) internal {
-        (bool success,) = to.call{value : value}(new bytes(0));
-        require(success, "OneSwap: ETH_TRANSFER_FAILED");
+
+    // safely transfer ERC20 tokens, or ETH (when token==0)
+    function _safeTransfer(address token, address to, uint value, address ones) internal {
+        if(token==address(0)) {
+            to.call{value : value}(new bytes(0)); //we ignore its return value purposely
+            return;
+        }
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(_SELECTOR, to, value));
+        success = success && (data.length == 0 || abi.decode(data, (bool)));
+        if(!success) { // for failsafe
+            address onesOwner = IOneSwapToken(ones).owner();
+            (success, data) = token.call(abi.encodeWithSelector(_SELECTOR, onesOwner, value));
+            require(success && (data.length == 0 || abi.decode(data, (bool))), "OneSwap: TRANSFER_FAILED");
+        }
     }
 
     // Give feeTo some liquidity tokens if K got increased since last liquidity-changing
-    function _mintFee(uint112 _reserve0, uint112 _reserve1) private returns (bool feeOn) {
-        address feeTo = IOneSwapFactory(_immuFactory).feeTo();
+    function _mintFee(uint112 _reserve0, uint112 _reserve1, uint[5] memory proxyData) private returns (bool feeOn) {
+        address feeTo = IOneSwapFactory(address(proxyData[ProxyData.IndexFactory])).feeTo();
         feeOn = feeTo != address(0);
         uint kLast = _kLast;
         // gas savings to use cached kLast
@@ -225,10 +236,12 @@ abstract contract OneSwapPool is OneSwapERC20, IOneSwapPool {
 
     // mint new liquidity tokens to 'to'
     function mint(address to) external override lock returns (uint liquidity) {
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.Count+1));
         (uint112 reserveStock, uint112 reserveMoney, uint32 firstSellID) = getReserves();
         (uint112 bookedStock, uint112 bookedMoney, ) = getBooked();
-        uint stockBalance = IERC20(_immuStockToken).balanceOf(address(this));
-        uint moneyBalance = IERC20(_immuMoneyToken).balanceOf(address(this));
+        uint stockBalance = _myBalance(address(proxyData[ProxyData.IndexStockToken]));
+        uint moneyBalance = _myBalance(address(proxyData[ProxyData.IndexMoneyToken]));
         require(stockBalance >= uint(bookedStock) + uint(reserveStock) &&
                 moneyBalance >= uint(bookedMoney) + uint(reserveMoney), "OneSwap: INVALID_BALANCE");
         stockBalance -= uint(bookedStock);
@@ -236,7 +249,7 @@ abstract contract OneSwapPool is OneSwapERC20, IOneSwapPool {
         uint stockAmount = stockBalance - uint(reserveStock);
         uint moneyAmount = moneyBalance - uint(reserveMoney);
 
-        bool feeOn = _mintFee(reserveStock, reserveMoney);
+        bool feeOn = _mintFee(reserveStock, reserveMoney, proxyData);
         uint _totalSupply = totalSupply;
         // gas savings by caching totalSupply in memory,
         // must be defined here since totalSupply can update in _mintFee
@@ -258,26 +271,32 @@ abstract contract OneSwapPool is OneSwapERC20, IOneSwapPool {
 
     // burn liquidity tokens and send stock&money to 'to'
     function burn(address to) external override lock returns (uint stockAmount, uint moneyAmount) {
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.Count+1));
         (uint112 reserveStock, uint112 reserveMoney, uint32 firstSellID) = getReserves();
         (uint bookedStock, uint bookedMoney, ) = getBooked();
-        uint stockBalance = IERC20(_immuStockToken).balanceOf(address(this)).sub(bookedStock);
-        uint moneyBalance = IERC20(_immuMoneyToken).balanceOf(address(this)).sub(bookedMoney);
+        uint stockBalance = _myBalance(address(proxyData[ProxyData.IndexStockToken])).sub(bookedStock);
+        uint moneyBalance = _myBalance(address(proxyData[ProxyData.IndexMoneyToken])).sub(bookedMoney);
         require(stockBalance >= uint(reserveStock) && moneyBalance >= uint(reserveMoney), "OneSwap: INVALID_BALANCE");
-        uint liquidity = balanceOf[address(this)]; // we're sure liquidity < totalSupply
 
-        bool feeOn = _mintFee(reserveStock, reserveMoney);
-        uint _totalSupply = totalSupply; // gas savings, must be defined here since totalSupply can update in _mintFee
-        stockAmount = liquidity.mul(stockBalance) / _totalSupply;
-        moneyAmount = liquidity.mul(moneyBalance) / _totalSupply;
-        require(stockAmount > 0 && moneyAmount > 0, "OneSwap: INSUFFICIENT_BURNED");
+        bool feeOn = _mintFee(reserveStock, reserveMoney, proxyData);
+        {
+            uint _totalSupply = totalSupply; // gas savings, must be defined here since totalSupply can update in _mintFee
+            uint liquidity = balanceOf[address(this)]; // we're sure liquidity < totalSupply
+            stockAmount = liquidity.mul(stockBalance) / _totalSupply;
+            moneyAmount = liquidity.mul(moneyBalance) / _totalSupply;
+            require(stockAmount > 0 && moneyAmount > 0, "OneSwap: INSUFFICIENT_BURNED");
 
-        //_burn(address(this), liquidity);
-        balanceOf[address(this)] = 0;
-        totalSupply = totalSupply.sub(liquidity);
-        emit Transfer(address(this), address(0), liquidity);
+            //_burn(address(this), liquidity);
+            balanceOf[address(this)] = 0;
+            totalSupply = totalSupply.sub(liquidity);
+            emit Transfer(address(this), address(0), liquidity);
+        }
 
-        _safeTransfer(_immuStockToken, to, stockAmount);
-        _safeTransfer(_immuMoneyToken, to, moneyAmount);
+        address ones = address(proxyData[ProxyData.IndexOnes]);
+        _safeTransfer(address(proxyData[ProxyData.IndexStockToken]), to, stockAmount, ones);
+        _safeTransfer(address(proxyData[ProxyData.IndexMoneyToken]), to, moneyAmount, ones);
+
         stockBalance = stockBalance - stockAmount;
         moneyBalance = moneyBalance - moneyAmount;
 
@@ -288,64 +307,61 @@ abstract contract OneSwapPool is OneSwapERC20, IOneSwapPool {
 
     // take the extra money&stock in this pair to 'to'
     function skim(address to) external override lock {
-        address _stock = _immuStockToken;
-        address _money = _immuMoneyToken;
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.Count+1));
+        address stockToken = address(proxyData[ProxyData.IndexStockToken]);
+        address moneyToken = address(proxyData[ProxyData.IndexMoneyToken]);
         (uint112 reserveStock, uint112 reserveMoney, ) = getReserves();
         (uint bookedStock, uint bookedMoney, ) = getBooked();
-        uint balanceStock = IERC20(_stock).balanceOf(address(this));
-        uint balanceMoney = IERC20(_money).balanceOf(address(this));
+        uint balanceStock = _myBalance(stockToken);
+        uint balanceMoney = _myBalance(moneyToken);
         require(balanceStock >= uint(bookedStock) + uint(reserveStock) &&
                 balanceMoney >= uint(bookedMoney) + uint(reserveMoney), "OneSwap: INVALID_BALANCE");
-        _safeTransfer(_stock, to, balanceStock-reserveStock-bookedStock);
-        _safeTransfer(_money, to, balanceMoney-reserveMoney-bookedMoney);
+        address ones = address(proxyData[ProxyData.IndexOnes]);
+        _safeTransfer(stockToken, to, balanceStock-reserveStock-bookedStock, ones);
+        _safeTransfer(moneyToken, to, balanceMoney-reserveMoney-bookedMoney, ones);
     }
 
     // sync-up reserve stock&money in pool according to real balance
     function sync() external override lock {
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.Count+0));
         (, , uint32 firstSellID) = getReserves();
         (uint bookedStock, uint bookedMoney, ) = getBooked();
-        uint balanceStock = IERC20(_immuStockToken).balanceOf(address(this));
-        uint balanceMoney = IERC20(_immuMoneyToken).balanceOf(address(this));
+        uint balanceStock = _myBalance(address(proxyData[ProxyData.IndexStockToken]));
+        uint balanceMoney = _myBalance(address(proxyData[ProxyData.IndexMoneyToken]));
         require(balanceStock >= bookedStock && balanceMoney >= bookedMoney, "OneSwap: INVALID_BALANCE");
         _setReserves(balanceStock-bookedStock, balanceMoney-bookedMoney, firstSellID);
     }
 
-    constructor(address weth, address stockToken, address moneyToken, bool isOnlySwap) public {
-        _immuFactory = msg.sender;
-        _immuWETH = weth;
-        _immuStockToken = stockToken;
-        _immuMoneyToken = moneyToken;
-        _immuIsOnlySwap = isOnlySwap;
-    }
-
 }
 
-contract OneSwapPair is OneSwapPool, IOneSwapPair {
+contract OneSwapPairImpl is OneSwapPoolImpl, IOneSwapPairImpl {
     // the orderbooks. Gas is saved when using array to store them instead of mapping
     uint[1<<22] private _sellOrders;
     uint[1<<22] private _buyOrders;
 
     uint32 private constant _MAX_ID = (1<<22)-1; // the maximum value of an order ID
-    uint64 internal immutable _immuStockUnit;
-    uint64 internal immutable _immuPriceMul;
-    uint64 internal immutable _immuPriceDiv;
 
-    constructor(address weth, address stockToken, address moneyToken, bool isOnlySwap, uint64 stockUnit, uint64 priceMul, uint64 priceDiv) public 
-    OneSwapPool(weth, stockToken, moneyToken, isOnlySwap) {
-        _immuStockUnit = stockUnit;
-        _immuPriceMul = priceMul;
-        _immuPriceDiv = priceDiv;
-    }
+    receive() external payable { }
 
-    function _expandPrice(uint32 price32) private view returns (RatPrice memory price) {
+    function _expandPrice(uint32 price32, uint[5] memory proxyData) private pure returns (RatPrice memory price) {
         price = DecFloat32.expandPrice(price32);
-        price.numerator *= _immuPriceMul;
-        price.denominator *= _immuPriceDiv;
+        price.numerator *= uint(uint64(proxyData[ProxyData.IndexOther]>>ProxyData.OffsetPriceMul));
+        price.denominator *= uint(uint64(proxyData[ProxyData.IndexOther]>>ProxyData.OffsetPriceDiv));
     }
 
-    function symbol() external view override returns (string memory) {
-        string memory s = IERC20(_immuStockToken).symbol();
-        string memory m = IERC20(_immuMoneyToken).symbol();
+    function _expandPrice(Context memory ctx, uint32 price32) private pure returns (RatPrice memory price) {
+        price = DecFloat32.expandPrice(price32);
+        price.numerator *= ctx.priceMul;
+        price.denominator *= ctx.priceDiv;
+    }
+
+    function symbol() external override returns (string memory) {
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.Count+0));
+        string memory s = IERC20(address(proxyData[ProxyData.IndexStockToken])).symbol();
+        string memory m = IERC20(address(proxyData[ProxyData.IndexMoneyToken])).symbol();
         return string(abi.encodePacked(s, "/", m, "-Share"));  //to concat strings
     }
 
@@ -492,7 +508,26 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         }
     }
 
+    function removeOrders(uint[] calldata rmList) external override lock {
+        uint[5] memory proxyData;
+	uint expectedCallDataSize = 4+32*(ProxyData.Count+2+rmList.length);
+        ProxyData.fill(proxyData, expectedCallDataSize);
+        for(uint i = 0; i < rmList.length; i++) {
+            uint rmInfo = rmList[i];
+            bool isBuy = uint8(rmInfo) != 0;
+            uint32 id = uint32(rmInfo>>8);
+            uint72 prevKey = uint72(rmInfo>>40);
+            _removeOrder(isBuy, id, prevKey, proxyData);
+        }
+    }
+
     function removeOrder(bool isBuy, uint32 id, uint72 prevKey) external override lock {
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.Count+3));
+        _removeOrder(isBuy, id, prevKey, proxyData);
+    }
+
+    function _removeOrder(bool isBuy, uint32 id, uint72 prevKey, uint[5] memory proxyData) private {
         Context memory ctx;
         (ctx.bookedStock, ctx.bookedMoney, ctx.firstBuyID) = getBooked();
         if(!isBuy) {
@@ -500,15 +535,17 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         }
         Order memory order = _removeOrderFromBook(ctx, isBuy, id, prevKey); // this is the removed order
         require(msg.sender == order.sender, "OneSwap: NOT_OWNER");
-        uint stockAmount = uint(order.amount)/*42bits*/ * uint(_immuStockUnit)/*64bits*/;
+        uint64 stockUnit = uint64(proxyData[ProxyData.IndexOther]>>ProxyData.OffsetStockUnit);
+        uint stockAmount = uint(order.amount)/*42bits*/ * uint(stockUnit);
+        address ones = address(proxyData[ProxyData.IndexOnes]);
         if(isBuy) {
-            RatPrice memory price = _expandPrice(order.price);
+            RatPrice memory price = _expandPrice(order.price, proxyData);
             uint moneyAmount = stockAmount * price.numerator/*54+64bits*/ / price.denominator;
             ctx.bookedMoney -= moneyAmount;
-            _transferToken(_immuMoneyToken, order.sender, moneyAmount, true);
+            _safeTransfer(address(proxyData[ProxyData.IndexMoneyToken]), order.sender, moneyAmount, ones);
         } else {
             ctx.bookedStock -= stockAmount;
-            _transferToken(_immuStockToken, order.sender, stockAmount, true);
+            _safeTransfer(address(proxyData[ProxyData.IndexStockToken]), order.sender, stockAmount, ones);
         }
         _setBooked(ctx.bookedStock, ctx.bookedMoney, ctx.firstBuyID);
     }
@@ -625,13 +662,15 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
     }
 
     // to query the first sell price, the first buy price and the price of pool
-    function getPrices() external override view returns (
+    function getPrices() external override returns (
         uint firstSellPriceNumerator,
         uint firstSellPriceDenominator,
         uint firstBuyPriceNumerator,
         uint firstBuyPriceDenominator,
         uint poolPriceNumerator,
         uint poolPriceDenominator) {
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.Count+0));
         (uint112 reserveStock, uint112 reserveMoney, uint32 firstSellID) = getReserves();
         poolPriceNumerator = uint(reserveMoney);
         poolPriceDenominator = uint(reserveStock);
@@ -641,14 +680,14 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         firstBuyPriceDenominator = 0;
         if(firstSellID!=0) {
             uint order = _sellOrders[firstSellID];
-            RatPrice memory price = _expandPrice(uint32(order>>64));
+            RatPrice memory price = _expandPrice(uint32(order>>64), proxyData);
             firstSellPriceNumerator = price.numerator;
             firstSellPriceDenominator = price.denominator;
         }
         uint32 id = uint32(_bookedStockAndMoneyAndFirstBuyID>>224);
         if(id!=0) {
             uint order = _buyOrders[id];
-            RatPrice memory price = _expandPrice(uint32(order>>64));
+            RatPrice memory price = _expandPrice(uint32(order>>64), proxyData);
             firstBuyPriceNumerator = price.numerator;
             firstBuyPriceDenominator = price.denominator;
         }
@@ -704,7 +743,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
     // Get an unused id to be used with new order
     function _getUnusedOrderID(bool isBuy, uint32 id) internal view returns (uint32) {
         if(id == 0) { // 0 is reserved
-            id = 1;
+            id = uint32(uint(blockhash(block.number-1))^uint(tx.origin)) & _MAX_ID;
         }
         for(uint32 i = 0; i < 100 && id <= _MAX_ID; i++) { //try 100 times
             if(!_hasOrder(isBuy, id)) {
@@ -716,23 +755,34 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         return 0;
     }
 
-    function calcStockAndMoney(uint64 amount, uint32 price32) external view override returns (uint stockAmount, uint moneyAmount) {
-        (stockAmount, moneyAmount, ) = _calcStockAndMoney(amount, price32);
+    function calcStockAndMoney(uint64 amount, uint32 price32) external override returns (uint stockAmount, uint moneyAmount) {
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.Count+2));
+        (stockAmount, moneyAmount, ) = _calcStockAndMoney(amount, price32, proxyData);
     }
 
-    function _calcStockAndMoney(uint64 amount, uint32 price32) private view returns (uint stockAmount, uint moneyAmount, RatPrice memory price) {
-        price = _expandPrice(price32);
-        stockAmount = uint(amount)/*42bits*/ * uint(_immuStockUnit)/*64bits*/;
+    function _calcStockAndMoney(uint64 amount, uint32 price32, uint[5] memory proxyData) private pure returns (uint stockAmount, uint moneyAmount, RatPrice memory price) {
+        price = _expandPrice(price32, proxyData);
+        uint64 stockUnit = uint64(proxyData[ProxyData.IndexOther]>>ProxyData.OffsetStockUnit);
+        stockAmount = uint(amount)/*42bits*/ * uint(stockUnit);
         moneyAmount = stockAmount * price.numerator/*54+64bits*/ /price.denominator;
     }
 
     function addLimitOrder(bool isBuy, address sender, uint64 amount, uint32 price32,
                            uint32 id, uint72 prevKey) external payable override lock {
-        require(_immuIsOnlySwap == false, "OneSwap: LIMIT_ORDER_NOT_SUPPORTED");
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.Count+6));
+        require(uint8(proxyData[ProxyData.IndexOther]>>ProxyData.OffsetIsOnlySwap) == 0, "OneSwap: LIMIT_ORDER_NOT_SUPPORTED");
         Context memory ctx;
+        ctx.stockUnit = uint64(proxyData[ProxyData.IndexOther]>>ProxyData.OffsetStockUnit);
+        ctx.ones = address(proxyData[ProxyData.IndexOnes]);
+        ctx.factory = address(proxyData[ProxyData.IndexFactory]);
+        ctx.stockToken = address(proxyData[ProxyData.IndexStockToken]);
+        ctx.moneyToken = address(proxyData[ProxyData.IndexMoneyToken]);
+        ctx.priceMul = uint64(proxyData[ProxyData.IndexOther]>>ProxyData.OffsetPriceMul);
+        ctx.priceDiv = uint64(proxyData[ProxyData.IndexOther]>>ProxyData.OffsetPriceDiv);
         ctx.hasDealtInOrderBook = false;
         ctx.isLimitOrder = true;
-        ctx.isLastSwap = true;
         ctx.order.sender = sender;
         ctx.order.amount = amount;
         ctx.order.price = price32;
@@ -747,7 +797,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
 
             uint stockAmount;
             uint moneyAmount;
-            (stockAmount, moneyAmount, price) = _calcStockAndMoney(amount, price32);
+            (stockAmount, moneyAmount, price) = _calcStockAndMoney(amount, price32, proxyData);
             if(isBuy) {
                 ctx.remainAmount = moneyAmount;
             } else {
@@ -780,13 +830,21 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
     }
 
     function addMarketOrder(address inputToken, address sender,
-                            uint112 inAmount, bool isLastSwap) external payable override lock returns (uint) {
-        require(inputToken == _immuMoneyToken || inputToken == _immuStockToken, "OneSwap: INVALID_TOKEN");
-        bool isBuy = inputToken == _immuMoneyToken;
+                            uint112 inAmount) external payable override lock returns (uint) {
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.Count+3));
         Context memory ctx;
+        ctx.moneyToken = address(proxyData[ProxyData.IndexMoneyToken]);
+        ctx.stockToken = address(proxyData[ProxyData.IndexStockToken]);
+        require(inputToken == ctx.moneyToken || inputToken == ctx.stockToken, "OneSwap: INVALID_TOKEN");
+        bool isBuy = inputToken == ctx.moneyToken;
+        ctx.stockUnit = uint64(proxyData[ProxyData.IndexOther]>>ProxyData.OffsetStockUnit);
+        ctx.priceMul = uint64(proxyData[ProxyData.IndexOther]>>ProxyData.OffsetPriceMul);
+        ctx.priceDiv = uint64(proxyData[ProxyData.IndexOther]>>ProxyData.OffsetPriceDiv);
+        ctx.ones = address(proxyData[ProxyData.IndexOnes]);
+        ctx.factory = address(proxyData[ProxyData.IndexFactory]);
         ctx.hasDealtInOrderBook = false;
         ctx.isLimitOrder = false;
-        ctx.isLastSwap = isLastSwap;
         ctx.remainAmount = inAmount;
         (ctx.reserveStock, ctx.reserveMoney, ctx.firstSellID) = getReserves();
         (ctx.bookedStock, ctx.bookedMoney, ctx.firstBuyID) = getBooked();
@@ -798,21 +856,18 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
             ctx.order.price = DecFloat32.MinPrice;
         }
 
-        RatPrice memory price = _expandPrice(ctx.order.price);
+        RatPrice memory price; // leave it to zero, actually it will not be used;
         _emitNewMarketOrder(uint136(ctx.order.sender), inAmount, isBuy);
         return _addOrder(ctx, isBuy, price);
     }
 
     // Check router contract did send me enough tokens.
     // If Router sent to much tokens, take them as reserve money&stock
-    function _checkRemainAmount(Context memory ctx, bool isBuy) private {
-        if(msg.value != 0) {
-            IWETH(_immuWETH).deposit{value: msg.value}();
-        }
+    function _checkRemainAmount(Context memory ctx, bool isBuy) private view {
         ctx.reserveChanged = false;
         uint diff;
         if(isBuy) {
-            uint balance = IERC20(_immuMoneyToken).balanceOf(address(this));
+            uint balance = _myBalance(ctx.moneyToken);
             require(balance >= ctx.bookedMoney + ctx.reserveMoney, "OneSwap: MONEY_MISMATCH");
             diff = balance - ctx.bookedMoney - ctx.reserveMoney;
             if(ctx.remainAmount < diff) {
@@ -820,7 +875,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
                 ctx.reserveChanged = true;
             }
         } else {
-            uint balance = IERC20(_immuStockToken).balanceOf(address(this));
+            uint balance = _myBalance(ctx.stockToken);
             require(balance >= ctx.bookedStock + ctx.reserveStock, "OneSwap: STOCK_MISMATCH");
             diff = balance - ctx.bookedStock - ctx.reserveStock;
             if(ctx.remainAmount < diff) {
@@ -845,7 +900,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
             if(!canDealInOrderBook) {break;} // no proper price in orderbook, stop here
 
             // Deal in liquid pool
-            RatPrice memory priceInBook = _expandPrice(orderInBook.price);
+            RatPrice memory priceInBook = _expandPrice(ctx, orderInBook.price);
             bool allDeal = _tryDealInPool(ctx, isBuy, priceInBook);
             if(allDeal) {break;}
 
@@ -865,23 +920,22 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         if(ctx.isLimitOrder) {
             // use current order's price to deal with pool
             _tryDealInPool(ctx, isBuy, price);
+            // If a limit order did NOT fully deal, we add it into orderbook
+            // Please note a market order always fully deals
+            _insertOrderToBook(ctx, isBuy, price);
         } else {
             // the AMM pool can deal with orders with any amount
             ctx.amountIntoPool += ctx.remainAmount; // both of them are less than 112 bits
             ctx.remainAmount = 0;
         }
-        if(ctx.firstID != currID) { //some orders DID fully deal, so the head of single-linked list change
-            _setFirstOrderID(ctx, !isBuy, currID);
-        }
         uint amountToTaker = _dealWithPoolAndCollectFee(ctx, isBuy);
-        if(ctx.isLimitOrder) {
-            // If a limit order did NOT fully deal, we add it into orderbook
-            _insertOrderToBook(ctx, isBuy, price);
-        }  // Please note a market order always fully deals
         if(isBuy) {
             ctx.bookedStock -= ctx.dealStockInBook; //If this subtraction overflows, _setBooked will fail
         } else {
             ctx.bookedMoney -= ctx.dealMoneyInBook; //If this subtraction overflows, _setBooked will fail
+        }
+        if(ctx.firstID != currID) { //some orders DID fully deal, so the head of single-linked list change
+            _setFirstOrderID(ctx, !isBuy, currID);
         }
         // write the cached values to storage
         _setBooked(ctx.bookedStock, ctx.bookedMoney, ctx.firstBuyID);
@@ -901,36 +955,41 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
             // sqrt(Pnew/Pold) = sqrt((2**32)*S_old*PnewNumerator / (M_old*PnewDenominator)) / (2**16)
             (numerator, denominator) = (denominator, numerator);
         }
-        numerator = numerator.mul(1<<32);
+        while(numerator > (1<<192)) {
+            numerator >>= 16;
+            denominator >>= 16;
+        }
+        require(denominator != 0, "OneSwapPair: DIV_BY_ZERO");
+        numerator = numerator * (1<<64);
         uint quotient = numerator / denominator;
         uint root = Math.sqrt(quotient); //root is at most 110bits
         uint diff = 0;
-        if(root <= (1<<16)) {
+        if(root <= (1<<32)) {
             return 0;
         } else {
-            diff = root - (1<<16);  //at most 110bits
+            diff = root - (1<<32);  //at most 110bits
         }
         if(isBuy) {
             result = reserveMoney * diff;
         } else {
             result = reserveStock * diff;
         }
-        result /= (1<<16);
+        result /= (1<<32);
         return result;
     }
 
     // Current order tries to deal against the AMM pool. Returns whether current order fully deals.
-    function _tryDealInPool(Context memory ctx, bool isBuy, RatPrice memory price) private view returns (bool) {
+    function _tryDealInPool(Context memory ctx, bool isBuy, RatPrice memory price) private pure returns (bool) {
         uint currTokenCanTrade = _intopoolAmountTillPrice(isBuy, ctx.reserveMoney, ctx.reserveStock, price);
         require(currTokenCanTrade < uint(1<<112), "OneSwap: CURR_TOKEN_TOO_LARGE");
         // all the below variables are less t han 112 bits
         if(!isBuy) {
-            currTokenCanTrade /= _immuStockUnit; //to round
-            currTokenCanTrade *= _immuStockUnit;
+            currTokenCanTrade /= ctx.stockUnit; //to round
+            currTokenCanTrade *= ctx.stockUnit;
         }
         if(currTokenCanTrade > ctx.amountIntoPool) {
             uint diffTokenCanTrade = currTokenCanTrade - ctx.amountIntoPool;
-            bool allDeal = diffTokenCanTrade >= ctx.remainAmount;
+            bool allDeal = diffTokenCanTrade > ctx.remainAmount;
             if(allDeal) {
                 diffTokenCanTrade = ctx.remainAmount;
             }
@@ -948,16 +1007,16 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         uint stockAmount;
         if(isBuy) {
             uint a = ctx.remainAmount/*112bits*/ * priceInBook.denominator/*76+64bits*/;
-            uint b = priceInBook.numerator/*54+64bits*/ * _immuStockUnit/*64bits*/;
+            uint b = priceInBook.numerator/*54+64bits*/ * ctx.stockUnit/*64bits*/;
             stockAmount = a/b;
         } else {
-            stockAmount = ctx.remainAmount/_immuStockUnit;
+            stockAmount = ctx.remainAmount/ctx.stockUnit;
         }
         if(uint(orderInBook.amount) < stockAmount) {
             stockAmount = uint(orderInBook.amount);
         }
         require(stockAmount < (1<<42), "OneSwap: STOCK_TOO_LARGE");
-        uint stockTrans = stockAmount/*42bits*/ * _immuStockUnit/*64bits*/;
+        uint stockTrans = stockAmount/*42bits*/ * ctx.stockUnit/*64bits*/;
         uint moneyTrans = stockTrans * priceInBook.numerator/*54+64bits*/ / priceInBook.denominator/*76+64bits*/;
 
         _emitOrderChanged(orderInBook.amount, uint64(stockAmount), currID, isBuy);
@@ -972,9 +1031,9 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         ctx.dealStockInBook += stockTrans;
         ctx.dealMoneyInBook += moneyTrans;
         if(isBuy) {
-            _transferToken(_immuMoneyToken, orderInBook.sender, moneyTrans, true);
+            _safeTransfer(ctx.moneyToken, orderInBook.sender, moneyTrans, ctx.ones);
         } else {
-            _transferToken(_immuStockToken, orderInBook.sender, stockTrans, true);
+            _safeTransfer(ctx.stockToken, orderInBook.sender, stockTrans, ctx.ones);
         }
     }
 
@@ -993,7 +1052,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         if(ctx.amountIntoPool > 0) {
             _emitDealWithPool(uint112(ctx.amountIntoPool), uint112(outAmount), isBuy);
         }
-        uint32 feeBPS = IOneSwapFactory(_immuFactory).feeBPS();
+        uint32 feeBPS = IOneSwapFactory(ctx.factory).feeBPS();
         // the token amount that should go to the taker, 
         // for buy-order, it's stock amount; for sell-order, it's money amount
         uint amountToTaker = outAmount + otherToTaker;
@@ -1009,11 +1068,11 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
             ctx.reserveStock = ctx.reserveStock + ctx.amountIntoPool;
         }
 
-        address token = _immuMoneyToken;
+        address token = ctx.moneyToken;
         if(isBuy) {
-            token = _immuStockToken;
+            token = ctx.stockToken;
         }
-        _transferToken(token, ctx.order.sender, amountToTaker, ctx.isLastSwap);
+        _safeTransfer(token, ctx.order.sender, amountToTaker, ctx.ones);
         return amountToTaker;
     }
 
@@ -1022,7 +1081,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         (uint smallAmount, uint moneyAmount, uint stockAmount) = (0, 0, 0);
         if(isBuy) {
             uint tempAmount1 = ctx.remainAmount /*112bits*/ * price.denominator /*76+64bits*/;
-            uint temp = _immuStockUnit * price.numerator/*54+64bits*/;
+            uint temp = ctx.stockUnit * price.numerator/*54+64bits*/;
             stockAmount = tempAmount1 / temp;
             uint tempAmount2 = stockAmount * temp; // Now tempAmount1 >= tempAmount2
             moneyAmount = (tempAmount2+price.denominator-1)/price.denominator; // round up
@@ -1033,11 +1092,13 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
                 moneyAmount = ctx.remainAmount;
             } //Now ctx.remainAmount >= moneyAmount
         } else {
-            // for sell orders, remainAmount were always decreased by integral multiple of _immuStockUnit
-            // and we know for sure that ctx.remainAmount % _immuStockUnit == 0
-            stockAmount = ctx.remainAmount / _immuStockUnit;
+            // for sell orders, remainAmount were always decreased by integral multiple of StockUnit
+            // and we know for sure that ctx.remainAmount % StockUnit == 0
+            stockAmount = ctx.remainAmount / ctx.stockUnit;
+            smallAmount = ctx.remainAmount - stockAmount * ctx.stockUnit;
         }
-        ctx.reserveMoney += smallAmount; // If this addition overflows, _setReserves will fail
+        ctx.amountIntoPool += smallAmount; // Deal smallAmount with pool
+        //ctx.reserveMoney += smallAmount; // If this addition overflows, _setReserves will fail
         _emitNewLimitOrder(uint64(ctx.order.sender), ctx.order.amount, uint64(stockAmount),
                            ctx.order.price, ctx.newOrderID, isBuy);
         if(stockAmount != 0) {
@@ -1055,27 +1116,83 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         if(isBuy) {
             ctx.bookedMoney += moneyAmount;
         } else {
-            ctx.bookedStock += ctx.remainAmount;
+            ctx.bookedStock += (ctx.remainAmount - smallAmount);
         }
     }
+}
 
-    receive() external payable {
-        assert(msg.sender == _immuWETH); // only accept ETH via fallback from the WETH contract
+contract OneSwapPairProxy {
+    uint internal _unlocked;
+
+    uint internal immutable _immuFactory;
+    uint internal immutable _immuMoneyToken;
+    uint internal immutable _immuStockToken;
+    uint internal immutable _immuOnes;
+    uint internal immutable _immuOther;
+
+    constructor(address stockToken, address moneyToken, bool isOnlySwap, uint64 stockUnit, uint64 priceMul, uint64 priceDiv, address ones) public {
+        _immuFactory = uint(msg.sender);
+        _immuMoneyToken = uint(moneyToken);
+        _immuStockToken = uint(stockToken);
+        _immuOnes = uint(ones);
+        uint temp = 0;
+        if(isOnlySwap) {
+            temp = 1;
+        }
+        temp = (temp<<64) | stockUnit;
+        temp = (temp<<64) | priceMul;
+        temp = (temp<<64) | priceDiv;
+        _immuOther = temp;
+        _unlocked = 1;
+    }
+
+    receive() external payable { }
+    fallback() payable external {
+        uint factory     = _immuFactory;
+        uint moneyToken  = _immuMoneyToken;
+        uint stockToken  = _immuStockToken;
+        uint ones        = _immuOnes;
+        uint other       = _immuOther;
+        address impl = IOneSwapFactory(address(_immuFactory)).pairLogic();
+        assembly {
+            let ptr := mload(0x40)
+            let size := calldatasize()
+            calldatacopy(ptr, 0, size)
+            let end := add(ptr, size)
+            // append immutable variables to the end of calldata
+            mstore(end, factory)
+            end := add(end, 32)
+            mstore(end, moneyToken)
+            end := add(end, 32)
+            mstore(end, stockToken)
+            end := add(end, 32)
+            mstore(end, ones)
+            end := add(end, 32)
+            mstore(end, other)
+            size := add(size, 160)
+            let result := delegatecall(gas(), impl, ptr, size, 0, 0)
+            size := returndatasize()
+            returndatacopy(ptr, 0, size)
+
+            switch result
+            case 0 { revert(ptr, size) }
+            default { return(ptr, size) }
+        }
     }
 }
 
 // this contract is only used for test
-contract OneSwapFactoryTEST {
+contract OneSwapFactoryPXYTEST {
     address public feeTo;
     address public feeToSetter;
-    address public weth;
+    address public pairLogic;
 
     mapping(address => mapping(address => address)) public pairs;
     address[] public allPairs;
 
     event PairCreated(address indexed stock, address indexed money, address pair, uint);
 
-    function createPair(address stock, address money) external {
+    function createPair(address stock, address money, address impl) external {
         require(stock != money, "OneSwap: IDENTICAL_ADDRESSES");
         require(stock != address(0) && money != address(0), "OneSwap: ZERO_ADDRESS");
         require(pairs[stock][money] == address(0), "OneSwap: PAIR_EXISTS"); // single check is sufficient
@@ -1083,10 +1200,11 @@ contract OneSwapFactoryTEST {
         require(25 >= dec && dec >= 6, "OneSwap: DECIMALS_NOT_SUPPORTED");
         dec -= 6;
         bytes32 salt = keccak256(abi.encodePacked(stock, money));
-        OneSwapPair oneswap = new OneSwapPair{salt: salt}(weth, stock, money, false, 1/*uint64(uint(10)**uint(dec))*/, 1, 1);
+        OneSwapPairProxy oneswap = new OneSwapPairProxy{salt: salt}(stock, money, false, 1, 1, 1, address(0));
         address pair = address(oneswap);
         pairs[stock][money] = pair;
         allPairs.push(pair);
+		pairLogic = impl;
         emit PairCreated(stock, money, pair, allPairs.length);
     }
 

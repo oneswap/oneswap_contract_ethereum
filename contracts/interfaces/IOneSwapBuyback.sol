@@ -4,7 +4,6 @@ pragma solidity ^0.6.6;
 interface IOneSwapBuyback {
     event BurnOnes(uint256 burntAmt);
 
-    function weth() external pure returns (address);
     function ones() external pure returns (address);
     function router() external pure returns (address);
     function factory() external pure returns (address);

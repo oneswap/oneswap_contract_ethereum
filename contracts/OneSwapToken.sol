@@ -102,8 +102,7 @@ contract OneSwapToken is IOneSwapToken,OneSwapBlackList {
     function _transfer(address sender, address recipient, uint256 amount) internal virtual {
         require(sender != address(0), "OneSwapToken: TRANSFER_FROM_THE_ZERO_ADDRESS");
         require(recipient != address(0), "OneSwapToken: TRANSFER_TO_THE_ZERO_ADDRESS");
-
-        _beforeTokenTransfer(sender, recipient, amount);
+        _beforeTokenTransfer(sender, recipient);
 
         _balances[sender] = _balances[sender].sub(amount, "OneSwapToken: TRANSFER_AMOUNT_EXCEEDS_BALANCE");
         _balances[recipient] = _balances[recipient].add(amount);
@@ -112,7 +111,8 @@ contract OneSwapToken is IOneSwapToken,OneSwapBlackList {
 
     function _burn(address account, uint256 amount) internal virtual {
         require(account != address(0), "OneSwapToken: BURN_FROM_THE_ZERO_ADDRESS");
-
+        //if called from burnFrom, either blackListed msg.sender or blackListed account causes failure
+        _beforeTokenTransfer(account, address(0));
         _balances[account] = _balances[account].sub(amount, "OneSwapToken: BURN_AMOUNT_EXCEEDS_BALANCE");
         _totalSupply = _totalSupply.sub(amount);
         emit Transfer(account, address(0), amount);
@@ -126,7 +126,8 @@ contract OneSwapToken is IOneSwapToken,OneSwapBlackList {
         emit Approval(owner, spender, amount);
     }
 
-    function _beforeTokenTransfer(address from, address to, uint256 ) internal virtual view {
+    function _beforeTokenTransfer(address from, address to) internal virtual view {
+        require(!isBlackListed(msg.sender), "OneSwapToken: MSG_SENDER_IS_BLACKLISTED_BY_TOKEN_OWNER");
         require(!isBlackListed(from), "OneSwapToken: FROM_IS_BLACKLISTED_BY_TOKEN_OWNER");
         require(!isBlackListed(to), "OneSwapToken: TO_IS_BLACKLISTED_BY_TOKEN_OWNER");
     }

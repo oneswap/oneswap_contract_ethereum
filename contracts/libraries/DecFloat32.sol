@@ -36,11 +36,13 @@ library DecFloat32 {
     uint32 constant MinPrice = MinMantissa;
     uint32 constant MaxPrice = (31<<27)|MaxMantissa;
 
+    // 10 ** (i + 1)
     function powSmall(uint32 i) internal pure returns (uint) {
         uint X = 2695994666777834996822029817977685892750687677375768584125520488993233305610;
         return (X >> (32*i)) & ((1<<32)-1);
     }
 
+    // 10 ** (i * 8)
     function powBig(uint32 i) internal pure returns (uint) {
         uint Y = 3402823669209384634633746076162356521930955161600000001;
         return (Y >> (64*i)) & ((1<<64)-1);
