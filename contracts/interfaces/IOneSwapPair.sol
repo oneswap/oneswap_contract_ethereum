@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.6.6;
+pragma solidity 0.6.12;
 
-interface IERC20Impl {
+interface IOneSwapERC20 {
     event Approval(address indexed owner, address indexed spender, uint value);
     event Transfer(address indexed from, address indexed to, uint value);
 
@@ -17,7 +17,7 @@ interface IERC20Impl {
     function transferFrom(address from, address to, uint value) external returns (bool);
 }
 
-interface IOneSwapPoolImpl {
+interface IOneSwapPool {
     // more liquidity was minted
     event Mint(address indexed sender, uint stockAndMoneyAmount, address indexed to);
     // liquidity was burned
@@ -36,7 +36,7 @@ interface IOneSwapPoolImpl {
     function sync() external;
 }
 
-interface IOneSwapPairImpl {
+interface IOneSwapPair {
     event NewLimitOrder(uint data); // new limit order was sent by an account
     event NewMarketOrder(uint data); // new market order was sent by an account
     event OrderChanged(uint data); // old orders in orderbook changed

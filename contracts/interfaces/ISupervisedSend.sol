@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.6.6;
+pragma solidity 0.6.12;
 
 interface ISupervisedSend {
     event SupervisedSend(address indexed from,address indexed to,address indexed supervisor,address token, uint amount,uint reward,uint32 unlockTime);

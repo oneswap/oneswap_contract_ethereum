@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.6.6;
+pragma solidity 0.6.12;
 
 interface IERC20 {
     event Approval(address indexed owner, address indexed spender, uint value);

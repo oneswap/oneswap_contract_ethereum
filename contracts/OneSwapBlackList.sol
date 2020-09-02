@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL
-pragma solidity ^0.6.6;
+pragma solidity 0.6.12;
 
 import "./interfaces/IOneSwapToken.sol";
 
@@ -43,7 +43,7 @@ abstract contract OneSwapBlackList is IOneSwapBlackList {
         _newOwner = ownerToSet;
     }
 
-    function updateOwner() public override onlyNewOwner{
+    function updateOwner() public override onlyNewOwner {
         _setOwner(_newOwner);
     }
 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL
-pragma solidity ^0.6.6;
+pragma solidity 0.6.12;
 
 import "./interfaces/IOneSwapFactory.sol";
-import "./OneSwapPairPXY.sol";
+import "./OneSwapPair.sol";
 
 contract OneSwapFactory is IOneSwapFactory {
     struct TokensInPair {
@@ -24,14 +24,14 @@ contract OneSwapFactory is IOneSwapFactory {
         feeToSetter = _feeToSetter;
         gov = _gov;
         ones = _ones;
-		pairLogic = _pairLogic;
+        pairLogic = _pairLogic;
     }
 
     function createPair(address stock, address money, bool isOnlySwap) external override returns (address pair) {
         require(stock != money, "OneSwapFactory: IDENTICAL_ADDRESSES");
         require(stock != address(0) || money != address(0), "OneSwapFactory: ZERO_ADDRESS");
-        uint moneyDec = getDecimals(money);
-        uint stockDec = getDecimals(stock);
+        uint moneyDec = _getDecimals(money);
+        uint stockDec = _getDecimals(stock);
         require(23 >= stockDec && stockDec >= 0, "OneSwapFactory: STOCK_DECIMALS_NOT_SUPPORTED");
         uint dec = 0;
         if(stockDec >= 4) {
@@ -68,7 +68,7 @@ contract OneSwapFactory is IOneSwapFactory {
         emit PairCreated(pair, stock, money, isOnlySwap);
     }
 
-    function getDecimals(address token) private view returns (uint){
+    function _getDecimals(address token) private view returns (uint){
         if (token == address(0)){ return 18;}
         return uint(IERC20(token).decimals());
     }

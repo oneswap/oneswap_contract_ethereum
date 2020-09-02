@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL
-pragma solidity ^0.6.6;
+pragma solidity 0.6.12;
 
 import "./libraries/SafeMath256.sol";
 import "./interfaces/ILockSend.sol";

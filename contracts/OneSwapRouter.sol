@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL
-pragma solidity ^0.6.6;
+pragma solidity 0.6.12;
 
 import "./interfaces/IOneSwapRouter.sol";
 import "./interfaces/IOneSwapFactory.sol";
-import "./interfaces/IOneSwapPairPXY.sol";
-import "./interfaces/IWETH.sol";
+import "./interfaces/IOneSwapPair.sol";
 import "./interfaces/IERC20.sol";
 import "./libraries/SafeMath256.sol";
 import "./libraries/DecFloat32.sol";
@@ -27,7 +26,7 @@ contract OneSwapRouter is IOneSwapRouter {
     function _addLiquidity(address pair, uint amountStockDesired, uint amountMoneyDesired,
         uint amountStockMin, uint amountMoneyMin) private view returns (uint amountStock, uint amountMoney) {
 
-        (uint reserveStock, uint reserveMoney, ) = IOneSwapPoolImpl(pair).getReserves();
+        (uint reserveStock, uint reserveMoney, ) = IOneSwapPool(pair).getReserves();
         if (reserveStock == 0 && reserveMoney == 0) {
             (amountStock, amountMoney) = (amountStockDesired, amountMoneyDesired);
         } else {
@@ -48,6 +47,9 @@ contract OneSwapRouter is IOneSwapRouter {
         uint amountMoneyDesired, uint amountStockMin, uint amountMoneyMin, address to, uint deadline) external
         payable override ensure(deadline) returns (uint amountStock, uint amountMoney, uint liquidity) {
 
+        if (stock != address(0) && money != address(0)) {
+            require(msg.value == 0, 'OneSwapRouter: NOT_ENTER_ETH_VALUE');
+        }
         address pair = IOneSwapFactory(factory).tokensToPair(stock, money, isOnlySwap);
         if (pair == address(0)) {
             pair = IOneSwapFactory(factory).createPair(stock, money, isOnlySwap);
@@ -56,14 +58,14 @@ contract OneSwapRouter is IOneSwapRouter {
             amountMoneyDesired, amountStockMin, amountMoneyMin);
         _safeTransferFrom(stock, msg.sender, pair, amountStock);
         _safeTransferFrom(money, msg.sender, pair, amountMoney);
-        liquidity = IOneSwapPoolImpl(pair).mint(to);
+        liquidity = IOneSwapPool(pair).mint(to);
         emit AddLiquidity(amountStock, amountMoney, liquidity);
     }
 
     function _removeLiquidity(address pair, uint liquidity, uint amountStockMin,
         uint amountMoneyMin, address to) private returns (uint amountStock, uint amountMoney) {
         IERC20(pair).transferFrom(msg.sender, pair, liquidity);
-        (amountStock, amountMoney) = IOneSwapPoolImpl(pair).burn(to);
+        (amountStock, amountMoney) = IOneSwapPool(pair).burn(to);
         require(amountStock >= amountStockMin, "OneSwapRouter: INSUFFICIENT_STOCK_AMOUNT");
         require(amountMoney >= amountMoneyMin, "OneSwapRouter: INSUFFICIENT_MONEY_AMOUNT");
     }
@@ -81,7 +83,7 @@ contract OneSwapRouter is IOneSwapRouter {
 
         for (uint i = 0; i < path.length; i++) {
             (address to, bool isLastSwap) = i < path.length - 1 ? (path[i+1], false) : (_to, true);
-            amounts[i + 1] = IOneSwapPairImpl(path[i]).addMarketOrder(input, to, uint112(amounts[i]));
+            amounts[i + 1] = IOneSwapPair(path[i]).addMarketOrder(input, to, uint112(amounts[i]));
             if (!isLastSwap) {
                 (address stock, address money) = _getTokensFromPair(path[i]);
                 input = (stock != input) ? stock : money;
@@ -92,6 +94,7 @@ contract OneSwapRouter is IOneSwapRouter {
     function swapToken(address token, uint amountIn, uint amountOutMin, address[] calldata path,
         address to, uint deadline) external payable override ensure(deadline) returns (uint[] memory amounts) {
 
+        if (token != address(0)){ require(msg.value == 0, 'OneSwapRouter: NOT_ENTER_ETH_VALUE'); }
         require(path.length >= 1, "OneSwapRouter: INVALID_PATH");
         // ensure pair exist
         _getTokensFromPair(path[0]);
@@ -105,11 +108,16 @@ contract OneSwapRouter is IOneSwapRouter {
 
         (address stock, address money) = _getTokensFromPair(pair);
         {
-            (uint _stockAmount, uint _moneyAmount) = IOneSwapPairImpl(pair).calcStockAndMoney(uint64(stockAmount), uint32(price));
-            isBuy ? _safeTransferFrom(money, msg.sender, pair, _moneyAmount)
-                  : _safeTransferFrom(stock, msg.sender, pair, _stockAmount);
+            (uint _stockAmount, uint _moneyAmount) = IOneSwapPair(pair).calcStockAndMoney(uint64(stockAmount), uint32(price));
+            if (isBuy) {
+                if (money != address(0)) { require(msg.value == 0, 'OneSwapRouter: NOT_ENTER_ETH_VALUE'); }
+                _safeTransferFrom(money, msg.sender, pair, _moneyAmount);
+            }else{
+                if (stock != address(0)) { require(msg.value == 0, 'OneSwapRouter: NOT_ENTER_ETH_VALUE'); }
+                _safeTransferFrom(stock, msg.sender, pair, _stockAmount);
+            }
         }
-        IOneSwapPairImpl(pair).addLimitOrder(isBuy, msg.sender, uint64(stockAmount), uint32(price), id, uint72(prevKey));
+        IOneSwapPair(pair).addLimitOrder(isBuy, msg.sender, uint64(stockAmount), uint32(price), id, uint72(prevKey));
     }
 
     // todo. add encoded bytes interface for limitOrder.
@@ -128,7 +136,7 @@ contract OneSwapRouter is IOneSwapRouter {
         (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
         require(success && (data.length == 0 || abi.decode(data, (bool))), "OneSwapRouter: TRANSFER_FROM_FAILED");
         uint afterAmount = IERC20(token).balanceOf(to);
-        require(afterAmount == beforeAmount + value, 'OneSwapRouter: TRANSFER_FAILED');
+        require(afterAmount == beforeAmount + value, "OneSwapRouter: TRANSFER_FAILED");
     }
 
     function _safeTransferETH(address to, uint value) internal{

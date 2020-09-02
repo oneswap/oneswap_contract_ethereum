@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.6.6;
+pragma solidity 0.6.12;
 
 interface ILockSend {
     event Locksend(address indexed from,address indexed to,address token,uint amount,uint32 unlockTime);

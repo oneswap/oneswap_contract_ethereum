@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL
-pragma solidity ^0.6.6;
+pragma solidity 0.6.12;
 
 import "./interfaces/IOneSwapToken.sol";
 import "./libraries/SafeMath256.sol";
 import "./OneSwapBlackList.sol";
 
-contract OneSwapToken is IOneSwapToken,OneSwapBlackList {
+contract OneSwapToken is IOneSwapToken, OneSwapBlackList {
 
     using SafeMath256 for uint256;
 
@@ -17,8 +17,7 @@ contract OneSwapToken is IOneSwapToken,OneSwapBlackList {
 
     string private _name;
     string private _symbol;
-    // solhint-disable-next-line state-visibility
-    uint8 immutable _decimals;
+    uint8 private immutable _decimals;
 
     constructor (string memory name, string memory symbol, uint256 supply, uint8 decimals) public OneSwapBlackList() {
         _name = name;
@@ -93,8 +92,8 @@ contract OneSwapToken is IOneSwapToken,OneSwapBlackList {
     function multiTransfer(uint256[] calldata mixedAddrVal) public override returns (bool) {
         for (uint i = 0; i < mixedAddrVal.length; i++) {
             address to = address(mixedAddrVal[i]>>96);
-            uint256 value = mixedAddrVal[i]&0xffffffffffff;
-            _transfer(msg.sender,to,value);
+            uint256 value = mixedAddrVal[i]&(2**96-1);
+            _transfer(msg.sender, to, value);
         }
         return true;
     }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL
-pragma solidity ^0.6.6;
+pragma solidity 0.6.12;
 
 import "./interfaces/IOneSwapToken.sol";
 import "./interfaces/IOneSwapGov.sol";
@@ -7,191 +7,272 @@ import "./interfaces/IOneSwapFactory.sol";
 
 contract OneSwapGov is IOneSwapGov {
 
-    struct Proposal {    // FUNDS            | PARAM        | TEXT
-        address addr;    // beneficiary addr | factory addr | N/A
-        uint32 deadline; // unix timestamp   | same         | same
-        uint32 value;    // amount of funds  | feeBPS       | N/A
-        uint8 _type;     // proposal type    | same         | same
-    }
-    struct Vote {
-        uint8 opinion;
-        address prevVoter;
+    struct VoterInfo {
+        uint24  votedProposal;
+        uint8   votedOpinion;
+        uint112 votedAmt;     // enouth to store ONES
+        uint112 depositedAmt; // enouth to store ONES
     }
 
-    uint64 private constant _MAX_UINT64 = uint64(-1);
-    uint8 private constant _PROPOSAL_TYPE_FUNDS = 0;
-    uint8 private constant _PROPOSAL_TYPE_PARAM = 1;
-    uint8 private constant _PROPOSAL_TYPE_TEXT  = 2;
-    uint32 private constant _MIN_FEE_BPS = 0;
-    uint32 private constant _MAX_FEE_BPS = 50;
+    uint8   private constant _PROPOSAL_TYPE_FUNDS   = 1; // ask for funds
+    uint8   private constant _PROPOSAL_TYPE_PARAM   = 2; // change factory.feeBPS
+    uint8   private constant _PROPOSAL_TYPE_UPGRADE = 3; // change factory.pairLogic
+    uint8   private constant _PROPOSAL_TYPE_TEXT    = 4; // pure text proposal
+    uint8   private constant _YES = 1;
+    uint8   private constant _NO  = 2;
+    uint32  private constant _MIN_FEE_BPS = 0;
+    uint32  private constant _MAX_FEE_BPS = 50;
+    uint256 private constant _MAX_FUNDS_REQUEST = 5000000; // 5000000 ONES
+    uint256 private constant _FAILED_PROPOSAL_COST = 1000; //    1000 ONES
+    uint256 private constant _SUBMIT_ONES_PERCENT = 1; // 1%
+    uint256 private constant _VOTE_PERIOD = 3 days;
+    uint256 private constant _TEXT_PROPOSAL_INTERVAL = 1 days;
 
-    uint8 private constant _YES = 1;
-    uint8 private constant _NO  = 2;
+    address public  immutable override ones;
+    uint256 private immutable _maxFundsRequest;    // 5000000 ONES
+    uint256 private immutable _failedProposalCost; //    1000 ONES
 
-    uint private constant _VOTE_PERIOD = 3 days;
-    uint private constant _SUBMIT_ONES_PERCENT = 1;
-
-    address public immutable override ones;
-
-    uint64 public override numProposals;
-    mapping (uint64 => Proposal) public override proposals;
-    mapping (uint64 => address) public override lastVoter;
-    mapping (uint64 => mapping (address => Vote)) public override votes;
-    mapping (uint64 => uint) private _yesCoins;
-    mapping (uint64 => uint) private _noCoins;
+    uint24  private _proposalID;
+    uint8   private _proposalType; // FUNDS            | PARAM        | UPGRADE            | TEXT
+    uint32  private _deadline;     // unix timestamp   | same         | same               | same
+    address private _addr;         // beneficiary addr | factory addr | factory addr       | not used
+    uint256 private _value;        // amount of funds  | feeBPS       | pair logic address | not used
+    address private _proposer;
+    uint112 private _totalYes;
+    uint112 private _totalNo;
+    uint112 private _totalDeposit;
+    mapping (address => VoterInfo) private _voters;
 
     constructor(address _ones) public {
         ones = _ones;
-        // numProposals = 0;
+        uint256 onesDec = IERC20(_ones).decimals();
+        _maxFundsRequest = _MAX_FUNDS_REQUEST * (10 ** onesDec);
+        _failedProposalCost = _FAILED_PROPOSAL_COST * (10 ** onesDec);
+    }
+
+    function proposalInfo() external view override returns (
+            uint24 id, address proposer, uint8 _type, uint32 deadline, address addr, uint256 value,
+            uint112 totalYes, uint112 totalNo, uint112 totalDeposit) {
+        id           = _proposalID;
+        proposer     = _proposer;
+        _type        = _proposalType;
+        deadline     = _deadline;
+        value        = _value;
+        addr         = _addr;
+        totalYes     = _totalYes;
+        totalNo      = _totalNo;
+        totalDeposit = _totalDeposit;
+    }
+    function voterInfo(address voter) external view override returns (
+            uint24 votedProposalID, uint8 votedOpinion, uint112 votedAmt, uint112 depositedAmt) {
+        VoterInfo memory info = _voters[voter];
+        votedProposalID = info.votedProposal;
+        votedOpinion    = info.votedOpinion;
+        votedAmt        = info.votedAmt;
+        depositedAmt    = info.depositedAmt;
     }
 
     // submit new proposals
     function submitFundsProposal(string calldata title, string calldata desc, string calldata url,
-            uint32 amount, address beneficiary) external override {
-        if (amount > 0) {
-            uint govCoins = IERC20(ones).balanceOf(address(this));
-            uint dec = IERC20(ones).decimals();
-            require(govCoins >= uint(amount) * (10 ** dec), "OneSwapGov: AMOUNT_TOO_LARGE");
+            address beneficiary, uint256 fundsAmt, uint112 voteAmt) external override {
+        if (fundsAmt > 0) {
+            require(fundsAmt <= _maxFundsRequest, "OneSwapGov: ASK_TOO_MANY_FUNDS");
+            uint256 govOnes = IERC20(ones).balanceOf(address(this));
+            uint256 availableOnes = govOnes - _totalDeposit;
+            require(govOnes > _totalDeposit && availableOnes >= fundsAmt,
+                "OneSwapGov: INSUFFICIENT_FUNDS");
         }
-        (uint64 proposalID, uint32 deadline) = _newProposal(_PROPOSAL_TYPE_FUNDS, beneficiary, amount);
-        emit NewFundsProposal(proposalID, title, desc, url, deadline, amount, beneficiary);
+        _newProposal(_PROPOSAL_TYPE_FUNDS, beneficiary, fundsAmt, voteAmt);
+        emit NewFundsProposal(_proposalID, title, desc, url, _deadline, beneficiary, fundsAmt);
+        _vote(_YES, voteAmt);
     }
     function submitParamProposal(string calldata title, string calldata desc, string calldata url,
-            uint32 feeBPS, address factory) external override {
+            address factory, uint32 feeBPS, uint112 voteAmt) external override {
         require(feeBPS >= _MIN_FEE_BPS && feeBPS <= _MAX_FEE_BPS, "OneSwapGov: INVALID_FEE_BPS");
-        (uint64 proposalID, uint32 deadline) = _newProposal(_PROPOSAL_TYPE_PARAM, factory, feeBPS);
-        emit NewParamProposal(proposalID, title, desc, url, deadline, feeBPS, factory);
+        _newProposal(_PROPOSAL_TYPE_PARAM, factory, feeBPS, voteAmt);
+        emit NewParamProposal(_proposalID, title, desc, url, _deadline, factory, feeBPS);
+        _vote(_YES, voteAmt);
     }
-    function submitTextProposal(string calldata title, string calldata desc, string calldata url) external override {
-        (uint64 proposalID, uint32 deadline) = _newProposal(_PROPOSAL_TYPE_TEXT, address(0), 0);
-        emit NewTextProposal(proposalID, title, desc, url, deadline);
+    function submitUpgradeProposal(string calldata title, string calldata desc, string calldata url,
+            address factory, address pairLogic, uint112 voteAmt) external override {
+        _newProposal(_PROPOSAL_TYPE_UPGRADE, factory, uint256(pairLogic), voteAmt);
+        emit NewUpgradeProposal(_proposalID, title, desc, url, _deadline, factory, pairLogic);
+        _vote(_YES, voteAmt);
+    }
+    function submitTextProposal(string calldata title, string calldata desc, string calldata url,
+            uint112 voteAmt) external override {
+        // solhint-disable-next-line not-rely-on-time
+        require(uint256(_deadline) + _TEXT_PROPOSAL_INTERVAL < block.timestamp,
+            "OneSwapGov: COOLING_DOWN");
+        _newProposal(_PROPOSAL_TYPE_TEXT, address(0), 0, voteAmt);
+        emit NewTextProposal(_proposalID, title, desc, url, _deadline);
+        _vote(_YES, voteAmt);
     }
 
-    function _newProposal(uint8 _type, address addr, uint32 value) private returns (uint64 proposalID, uint32 deadline) {
+    function _newProposal(uint8 _type, address addr, uint256 value, uint112 voteAmt) private {
         require(_type >= _PROPOSAL_TYPE_FUNDS && _type <= _PROPOSAL_TYPE_TEXT,
             "OneSwapGov: INVALID_PROPOSAL_TYPE");
+        require(_type == _PROPOSAL_TYPE_TEXT || msg.sender == IOneSwapToken(ones).owner(),
+            "OneSwapGov: NOT_ONES_OWNER");
+        require(_proposalType == 0, "OneSwapGov: LAST_PROPOSAL_NOT_FINISHED");
 
-        uint totalCoins = IERC20(ones).totalSupply();
-        uint thresCoins = (totalCoins/100) * _SUBMIT_ONES_PERCENT;
-        uint senderCoins = IERC20(ones).balanceOf(msg.sender);
+        uint256 totalOnes = IERC20(ones).totalSupply();
+        uint256 thresOnes = (totalOnes/100) * _SUBMIT_ONES_PERCENT;
+        require(voteAmt >= thresOnes, "OneSwapGov: VOTE_AMOUNT_TOO_LESS");
 
-        // the sender must have enough coins
-        require(senderCoins >= thresCoins, "OneSwapGov: NOT_ENOUGH_ONES");
-
-        proposalID = numProposals;
-        numProposals = numProposals+1;
+        _proposalID++;
+        _proposalType = _type;
+        _proposer = msg.sender;
         // solhint-disable-next-line not-rely-on-time
-        deadline = uint32(block.timestamp + _VOTE_PERIOD);
-
-        Proposal memory proposal;
-        proposal._type = _type;
-        proposal.deadline = deadline;
-        proposal.addr = addr;
-        proposal.value = value;
-        proposals[proposalID] = proposal;
-
-        lastVoter[proposalID] = msg.sender;
-        Vote memory v;
-        v.opinion = _YES;
-        v.prevVoter = address(0);
-        votes[proposalID][msg.sender] = v;
+        _deadline = uint32(block.timestamp + _VOTE_PERIOD);
+        _value = value;
+        _addr = addr;
+        _totalYes = 0;
+        _totalNo = 0;
+    }
+ 
+    function vote(uint8 opinion, uint112 voteAmt) external override {
+        require(_proposalType > 0, "OneSwapGov: NO_PROPOSAL");
+        // solhint-disable-next-line not-rely-on-time
+        require(uint256(_deadline) > block.timestamp, "OneSwapGov: DEADLINE_REACHED");
+        _vote(opinion, voteAmt);
     }
 
-    // Have never voted before, vote for the first time
-    function vote(uint64 id, uint8 opinion) external override {
-        uint balance = IERC20(ones).balanceOf(msg.sender);
-        require(balance > 0, "OneSwapGov: NO_ONES");
+    function _vote(uint8 opinion, uint112 addedVoteAmt) private {
+        require(_YES <= opinion && opinion <= _NO, "OneSwapGov: INVALID_OPINION");
+        require(addedVoteAmt > 0, "OneSwapGov: ZERO_VOTE_AMOUNT");
 
-        Proposal memory proposal = proposals[id];
-        require(proposal.deadline != 0, "OneSwapGov: NO_PROPOSAL");
-        // solhint-disable-next-line not-rely-on-time
-        require(uint(proposal.deadline) >= block.timestamp, "OneSwapGov: DEADLINE_REACHED");
+        (uint24 currProposalID, uint24 votedProposalID,
+            uint8 votedOpinion, uint112 votedAmt, uint112 depositedAmt) = _getVoterInfo();
 
-        require(_YES<=opinion && opinion<=_NO, "OneSwapGov: INVALID_OPINION");
-        Vote memory v = votes[id][msg.sender];
-        require(v.opinion == 0, "OneSwapGov: ALREADY_VOTED");
-
-        v.prevVoter = lastVoter[id];
-        v.opinion = opinion;
-        votes[id][msg.sender] = v;
-
-        lastVoter[id] = msg.sender;
-
-        emit NewVote(id, msg.sender, opinion);
-    }
-
-    // Have ever voted before, need to change my opinion
-    function revote(uint64 id, uint8 opinion) external override {
-        require(_YES<=opinion && opinion<=_NO, "OneSwapGov: INVALID_OPINION");
-
-        Proposal memory proposal = proposals[id];
-        require(proposal.deadline != 0, "OneSwapGov: NO_PROPOSAL");
-        // solhint-disable-next-line not-rely-on-time
-        require(uint(proposal.deadline) >= block.timestamp, "OneSwapGov: DEADLINE_REACHED");
-
-        Vote memory v = votes[id][msg.sender];
-        // should have voted before
-        require(v.opinion != 0, "OneSwapGov: NOT_VOTED");
-        v.opinion = opinion;
-        votes[id][msg.sender] = v;
-
-        emit NewVote(id, msg.sender, opinion);
-    }
-
-    // Count the votes, if the result is "Pass", transfer coins to the beneficiary
-    function tally(uint64 proposalID, uint64 maxEntry) external override {
-        Proposal memory proposal = proposals[proposalID];
-        require(proposal.deadline != 0, "OneSwapGov: NO_PROPOSAL");
-        // solhint-disable-next-line not-rely-on-time
-        require(uint(proposal.deadline) <= block.timestamp, "OneSwapGov: DEADLINE_NOT_REACHED");
-        require(maxEntry == _MAX_UINT64 || (maxEntry > 0 && msg.sender == IOneSwapToken(ones).owner()),
-            "OneSwapGov: INVALID_MAX_ENTRY");
-
-        address currVoter = lastVoter[proposalID];
-        require(currVoter != address(0), "OneSwapGov: NO_LAST_VOTER");
-        uint yesCoinsSum = _yesCoins[proposalID];
-        uint yesCoinsOld = yesCoinsSum;
-        uint noCoinsSum = _noCoins[proposalID];
-        uint noCoinsOld = noCoinsSum;
-
-        for (uint64 i=0; i < maxEntry && currVoter != address(0); i++) {
-            Vote memory v = votes[proposalID][currVoter];
-            if(v.opinion == _YES) {
-                yesCoinsSum += IERC20(ones).balanceOf(currVoter);
+        // cancel previous votes if opinion changed
+        bool isRevote = false;
+        if ((votedProposalID == currProposalID) && (votedOpinion != opinion)) {
+            if (votedOpinion == _YES) {
+                assert(_totalYes >= votedAmt);
+                _totalYes -= votedAmt;
+            } else {
+                assert(_totalNo >= votedAmt);
+                _totalNo -= votedAmt;
             }
-            if(v.opinion == _NO) {
-                noCoinsSum += IERC20(ones).balanceOf(currVoter);
-            }
-            delete votes[proposalID][currVoter];
-            currVoter = v.prevVoter;
+            votedAmt = 0;
+            isRevote = true;
         }
 
-        if (currVoter != address(0)) {
-            lastVoter[proposalID] = currVoter;
-            if (yesCoinsSum != yesCoinsOld) {
-                _yesCoins[proposalID] = yesCoinsSum;
-            }
-            if (noCoinsSum != noCoinsOld) {
-                _noCoins[proposalID] = noCoinsSum;
-            }
+        // need to deposit more ONES?
+        assert(depositedAmt >= votedAmt);
+        if (addedVoteAmt > depositedAmt - votedAmt) {
+            uint112 moreDeposit = addedVoteAmt - (depositedAmt - votedAmt);
+            depositedAmt += moreDeposit;
+            _totalDeposit += moreDeposit;
+            IERC20(ones).transferFrom(msg.sender, address(this), moreDeposit);
+        }
+
+        if (opinion == _YES) {
+            _totalYes += addedVoteAmt;
         } else {
-            bool ok = yesCoinsSum > noCoinsSum;
-            delete proposals[proposalID];
-            delete lastVoter[proposalID];
-            delete _yesCoins[proposalID];
-            delete _noCoins[proposalID];
-            if (ok) {
-                if (proposal._type == _PROPOSAL_TYPE_FUNDS) {
-                    if (proposal.value > 0) {
-                        uint dec = IERC20(ones).decimals();
-                        IERC20(ones).transfer(proposal.addr, proposal.value * (10 ** dec));
-                    }
-                } else if (proposal._type == _PROPOSAL_TYPE_PARAM) {
-                    IOneSwapFactory(proposal.addr).setFeeBPS(proposal.value);
-                }
-            }
-            emit TallyResult(proposalID, ok);
+            _totalNo += addedVoteAmt;
         }
+        votedAmt += addedVoteAmt;
+        _setVoterInfo(currProposalID, opinion, votedAmt, depositedAmt);
+ 
+        if (isRevote) {
+            emit Revote(currProposalID, msg.sender, opinion, addedVoteAmt);
+        } else if (votedAmt > addedVoteAmt) {
+            emit AddVote(currProposalID, msg.sender, opinion, addedVoteAmt);
+        } else {
+            emit NewVote(currProposalID, msg.sender, opinion, addedVoteAmt);
+        }
+    }
+    function _getVoterInfo() private view returns (uint24 currProposalID,
+            uint24 votedProposalID, uint8 votedOpinion, uint112 votedAmt, uint112 depositedAmt) {
+        currProposalID = _proposalID;
+        VoterInfo memory voter = _voters[msg.sender];
+        depositedAmt = voter.depositedAmt;
+        if (voter.votedProposal == currProposalID) {
+            votedProposalID = currProposalID;
+            votedOpinion = voter.votedOpinion;
+            votedAmt = voter.votedAmt;
+        }
+    }
+    function _setVoterInfo(uint24 proposalID,
+            uint8 opinion, uint112 votedAmt, uint112 depositedAmt) private {
+        _voters[msg.sender] = VoterInfo({
+            votedProposal: proposalID,
+            votedOpinion : opinion,
+            votedAmt     : votedAmt,
+            depositedAmt : depositedAmt
+        });
+    }
+
+    function tally() external override {
+        require(_proposalType > 0, "OneSwapGov: NO_PROPOSAL");
+        // solhint-disable-next-line not-rely-on-time
+        require(uint256(_deadline) <= block.timestamp, "OneSwapGov: STILL_VOTING");
+
+        bool ok = _totalYes > _totalNo;
+        uint8 _type = _proposalType;
+        uint256 val = _value;
+        address addr = _addr;
+        address proposer = _proposer;
+        _resetProposal();
+        if (ok) {
+            _execProposal(_type, addr, val);
+        } else {
+            _taxProposer(proposer);
+        }
+        emit TallyResult(_proposalID, ok);
+    }
+    function _resetProposal() private {
+        _proposalType = 0;
+     // _deadline     = 0; // use _deadline to check _TEXT_PROPOSAL_INTERVAL
+        _value        = 0;
+        _addr         = address(0);
+        _proposer     = address(0);
+        _totalYes     = 0;
+        _totalNo      = 0;
+    }
+    function _execProposal(uint8 _type, address addr, uint256 val) private {
+        if (_type == _PROPOSAL_TYPE_FUNDS) {
+            if (val > 0) {
+                IERC20(ones).transfer(addr, val);
+            }
+        } else if (_type == _PROPOSAL_TYPE_PARAM) {
+            IOneSwapFactory(addr).setFeeBPS(uint32(val));
+        } else if (_type == _PROPOSAL_TYPE_UPGRADE) {
+            IOneSwapFactory(addr).setPairLogic(address(val));
+        }
+    }
+    function _taxProposer(address proposerAddr) private {
+        // burn 1000 ONES of proposer
+        uint112 cost = uint112(_failedProposalCost);
+
+        VoterInfo memory proposerInfo = _voters[proposerAddr];
+        if (proposerInfo.depositedAmt < cost) { // unreachable!
+            cost = proposerInfo.depositedAmt;
+        }
+
+        _totalDeposit -= cost;
+        proposerInfo.depositedAmt -= cost;
+        _voters[proposerAddr] = proposerInfo;
+
+        IOneSwapToken(ones).burn(cost);
+    }
+
+    function withdrawOnes(uint112 amt) external override {
+        VoterInfo memory voter = _voters[msg.sender];
+
+        require(_proposalType == 0 || voter.votedProposal < _proposalID, "OneSwapGov: IN_VOTING");
+        require(amt > 0 && amt <= voter.depositedAmt, "OneSwapGov: INVALID_WITHDRAW_AMOUNT");
+
+        _totalDeposit -= amt;
+        voter.depositedAmt -= amt;
+        if (voter.depositedAmt == 0) {
+            delete _voters[msg.sender];
+        } else {
+            _voters[msg.sender] = voter;
+        }
+        IERC20(ones).transfer(msg.sender, amt);
     }
 
 }

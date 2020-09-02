@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.6.6;
+pragma solidity 0.6.12;
 
 /*
 This library defines a decimal floating point number. It has 8 decimal significant digits. Its maximum value is 9.9999999e+15.
@@ -30,22 +30,22 @@ struct RatPrice {
 }
 
 library DecFloat32 {
-    uint32 constant MantissaMask = (1<<27) - 1;
-    uint32 constant MaxMantissa = 9999_9999;
-    uint32 constant MinMantissa = 1000_0000;
-    uint32 constant MinPrice = MinMantissa;
-    uint32 constant MaxPrice = (31<<27)|MaxMantissa;
+    uint32 public constant MANTISSA_MASK = (1<<27) - 1;
+    uint32 public constant MAX_MANTISSA = 9999_9999;
+    uint32 public constant MIN_MANTISSA = 1000_0000;
+    uint32 public constant MIN_PRICE = MIN_MANTISSA;
+    uint32 public constant MAX_PRICE = (31<<27)|MAX_MANTISSA;
 
     // 10 ** (i + 1)
     function powSmall(uint32 i) internal pure returns (uint) {
-        uint X = 2695994666777834996822029817977685892750687677375768584125520488993233305610;
-        return (X >> (32*i)) & ((1<<32)-1);
+        uint x = 2695994666777834996822029817977685892750687677375768584125520488993233305610;
+        return (x >> (32*i)) & ((1<<32)-1);
     }
 
     // 10 ** (i * 8)
     function powBig(uint32 i) internal pure returns (uint) {
-        uint Y = 3402823669209384634633746076162356521930955161600000001;
-        return (Y >> (64*i)) & ((1<<64)-1);
+        uint y = 3402823669209384634633746076162356521930955161600000001;
+        return (y >> (64*i)) & ((1<<64)-1);
     }
 
     // if price32=( 0<<27)|12345678 then numerator=12345678 denominator=100000000000000000000000
@@ -100,9 +100,9 @@ library DecFloat32 {
     }
 
     function getExpandPrice(uint price) internal pure returns(uint numerator, uint denominator) {
-        uint32 m = uint32(price) & DecFloat32.MantissaMask;
-        require(DecFloat32.MinMantissa <= m && m <= DecFloat32.MaxMantissa, "Invalid Price");
-        RatPrice memory actualPrice = DecFloat32.expandPrice(uint32(price));
+        uint32 m = uint32(price) & MANTISSA_MASK;
+        require(MIN_MANTISSA <= m && m <= MAX_MANTISSA, "Invalid Price");
+        RatPrice memory actualPrice = expandPrice(uint32(price));
         return (actualPrice.numerator, actualPrice.denominator);
     }
 
