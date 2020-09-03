@@ -1,0 +1,12 @@
+.idea
+output
+*.swp
+build
+.DS_Store
+*.swo
+.secret
+node_modules
+coverage
+coverage.json
+.coverage_contracts
+.coverage_artifacts
