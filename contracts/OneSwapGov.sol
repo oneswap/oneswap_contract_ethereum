@@ -95,6 +95,7 @@ contract OneSwapGov is IOneSwapGov {
     }
     function submitUpgradeProposal(string calldata title, string calldata desc, string calldata url,
             address factory, address pairLogic, uint112 voteAmt) external override {
+        // require(pairLogic != address(0), "OneSwapGov: INVALID_PAIR_LOGIC");
         _newProposal(_PROPOSAL_TYPE_UPGRADE, factory, uint256(pairLogic), voteAmt);
         emit NewUpgradeProposal(_proposalID, title, desc, url, _deadline, factory, pairLogic);
         _vote(_YES, voteAmt);

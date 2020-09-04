@@ -94,7 +94,7 @@ contract OneSwapRouter is IOneSwapRouter {
     function swapToken(address token, uint amountIn, uint amountOutMin, address[] calldata path,
         address to, uint deadline) external payable override ensure(deadline) returns (uint[] memory amounts) {
 
-        if (token != address(0)){ require(msg.value == 0, 'OneSwapRouter: NOT_ENTER_ETH_VALUE'); }
+        if (token != address(0)) { require(msg.value == 0, 'OneSwapRouter: NOT_ENTER_ETH_VALUE'); }
         require(path.length >= 1, "OneSwapRouter: INVALID_PATH");
         // ensure pair exist
         _getTokensFromPair(path[0]);
@@ -112,7 +112,7 @@ contract OneSwapRouter is IOneSwapRouter {
             if (isBuy) {
                 if (money != address(0)) { require(msg.value == 0, 'OneSwapRouter: NOT_ENTER_ETH_VALUE'); }
                 _safeTransferFrom(money, msg.sender, pair, _moneyAmount);
-            }else{
+            } else {
                 if (stock != address(0)) { require(msg.value == 0, 'OneSwapRouter: NOT_ENTER_ETH_VALUE'); }
                 _safeTransferFrom(stock, msg.sender, pair, _stockAmount);
             }
@@ -123,7 +123,7 @@ contract OneSwapRouter is IOneSwapRouter {
     // todo. add encoded bytes interface for limitOrder.
 
     function _safeTransferFrom(address token, address from, address to, uint value) internal {
-        if (token == address(0)){
+        if (token == address(0)) {
             _safeTransferETH(to, value);
             uint inputValue = msg.value;
             if (inputValue > value) { _safeTransferETH(msg.sender, inputValue - value); }
@@ -139,7 +139,7 @@ contract OneSwapRouter is IOneSwapRouter {
         require(afterAmount == beforeAmount + value, "OneSwapRouter: TRANSFER_FAILED");
     }
 
-    function _safeTransferETH(address to, uint value) internal{
+    function _safeTransferETH(address to, uint value) internal {
         // solhint-disable-next-line avoid-low-level-calls
         (bool success,) = to.call{value:value}(new bytes(0));
         require(success, "TransferHelper: ETH_TRANSFER_FAILED");
@@ -151,7 +151,7 @@ contract OneSwapRouter is IOneSwapRouter {
         amountB = amountA.mul(reserveB) / reserveA;
     }
 
-    function _getTokensFromPair(address pair)internal view returns(address stock, address money) {
+    function _getTokensFromPair(address pair) internal view returns(address stock, address money) {
         (stock, money) = IOneSwapFactory(factory).getTokensFromPair(pair);
         require(stock != address(0) || money != address(0), "OneSwapRouter: PAIR_NOT_EXIST");
     }

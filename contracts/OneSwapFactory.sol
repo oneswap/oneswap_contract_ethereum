@@ -29,12 +29,12 @@ contract OneSwapFactory is IOneSwapFactory {
 
     function createPair(address stock, address money, bool isOnlySwap) external override returns (address pair) {
         require(stock != money, "OneSwapFactory: IDENTICAL_ADDRESSES");
-        require(stock != address(0) || money != address(0), "OneSwapFactory: ZERO_ADDRESS");
+        // not necessary //require(stock != address(0) || money != address(0), "OneSwapFactory: ZERO_ADDRESS");
         uint moneyDec = _getDecimals(money);
         uint stockDec = _getDecimals(stock);
         require(23 >= stockDec && stockDec >= 0, "OneSwapFactory: STOCK_DECIMALS_NOT_SUPPORTED");
         uint dec = 0;
-        if(stockDec >= 4) {
+        if (stockDec >= 4) {
             dec = stockDec - 4; // now 19 >= dec && dec >= 0
         }
         // 10**19 = 10000000000000000000
@@ -42,15 +42,15 @@ contract OneSwapFactory is IOneSwapFactory {
         uint64 priceMul = 1;
         uint64 priceDiv = 1;
         bool differenceTooLarge = false;
-        if(moneyDec > stockDec) {
-            if(moneyDec > stockDec + 19) {
+        if (moneyDec > stockDec) {
+            if (moneyDec > stockDec + 19) {
                 differenceTooLarge = true;
             } else {
                 priceMul = uint64(uint(10)**(moneyDec - stockDec));
             }
         }
-        if(stockDec > moneyDec) {
-            if(stockDec > moneyDec + 19) {
+        if (stockDec > moneyDec) {
+            if (stockDec > moneyDec + 19) {
                 differenceTooLarge = true;
             } else {
                 priceDiv = uint64(uint(10)**(stockDec - moneyDec));
@@ -68,8 +68,8 @@ contract OneSwapFactory is IOneSwapFactory {
         emit PairCreated(pair, stock, money, isOnlySwap);
     }
 
-    function _getDecimals(address token) private view returns (uint){
-        if (token == address(0)){ return 18;}
+    function _getDecimals(address token) private view returns (uint) {
+        if (token == address(0)) { return 18; }
         return uint(IERC20(token).decimals());
     }
 
@@ -103,7 +103,7 @@ contract OneSwapFactory is IOneSwapFactory {
         money = _pairWithToken[pair].money;
     }
 
-    function tokensToPair(address stock, address money, bool isOnlySwap) external view override returns (address pair){
+    function tokensToPair(address stock, address money, bool isOnlySwap) external view override returns (address pair) {
         bytes32 key = keccak256(abi.encodePacked(stock, money, isOnlySwap));
         return _tokensToPair[key];
     }
