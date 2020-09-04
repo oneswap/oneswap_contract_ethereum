@@ -34,10 +34,7 @@ contract SupervisedSend is ISupervisedSend {
         // prevent duplicated send
         require(info.amount == 0 && info.reward == 0, "SupervisedSend: INFO_ALREADY_EXISTS");
         _safeTransferToMe(token, msg.sender, uint(amount).add(uint(reward)));
-        //todo: whether or not to allow serialNumber duplicated supervisedSend
-        uint updateAmount = uint(info.amount).add(amount);
-        uint updateReward = uint(info.reward).add(reward);
-        supervisedSendInfos[key][serialNumber]= supervisedSendInfo(uint112(updateAmount), uint112(updateReward));
+        supervisedSendInfos[key][serialNumber]= supervisedSendInfo(amount, reward);
         emit SupervisedSend(msg.sender, to, supervisor, token, amount, reward, unlockTime);
     }
 

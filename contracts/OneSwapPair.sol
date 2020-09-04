@@ -380,8 +380,8 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
     // when emitting events, solidity's ABI pads each entry to uint256, which is so wasteful
     // we compress the entries into one uint256 to save gas
     function _emitNewLimitOrder(
-        uint64 addressLow, /*255~193*/
-        uint64 totalStockAmount, /*192~128*/
+        uint64 addressLow, /*255~192*/
+        uint64 totalStockAmount, /*191~128*/
         uint64 remainedStockAmount, /*127~64*/
         uint32 price, /*63~32*/
         uint32 orderID, /*31~8*/
@@ -1008,7 +1008,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
     function _tryDealInPool(Context memory ctx, bool isBuy, RatPrice memory price) private pure returns (bool) {
         uint currTokenCanTrade = _intopoolAmountTillPrice(isBuy, ctx.reserveMoney, ctx.reserveStock, price);
         require(currTokenCanTrade < uint(1<<112), "OneSwap: CURR_TOKEN_TOO_LARGE");
-        // all the below variables are less t han 112 bits
+        // all the below variables are less than 112 bits
         if(!isBuy) {
             currTokenCanTrade /= ctx.stockUnit; //to round
             currTokenCanTrade *= ctx.stockUnit;
