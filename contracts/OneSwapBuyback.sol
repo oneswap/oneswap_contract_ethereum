@@ -78,7 +78,8 @@ contract OneSwapBuyback is IOneSwapBuyback {
         require(a != address(0) || b != address(0), "OneSwapBuyback: INVALID_PAIR");
 
         uint256 amt = IERC20(pair).balanceOf(address(this));
-        require(amt > 0, "OneSwapBuyback: NO_LIQUIDITY");
+        // require(amt > 0, "OneSwapBuyback: NO_LIQUIDITY");
+        if (amt == 0) { return; }
 
         IERC20(pair).approve(router, 0);
         IERC20(pair).approve(router, amt);
@@ -114,7 +115,8 @@ contract OneSwapBuyback is IOneSwapBuyback {
         }
 
         uint256 minorTokenAmt = IERC20(minorToken).balanceOf(address(this));
-        require(minorTokenAmt > 0, "OneSwapBuyback: NO_MINOR_TOKENS");
+        // require(minorTokenAmt > 0, "OneSwapBuyback: NO_MINOR_TOKENS");
+        if (minorTokenAmt == 0) { return; }
 
         address[] memory path = new address[](1);
         path[0] = pair;
@@ -134,6 +136,7 @@ contract OneSwapBuyback is IOneSwapBuyback {
 
         // burn all ones
         uint256 allOnes = IERC20(ones).balanceOf(address(this));
+        if (allOnes == 0) { return; }
         IOneSwapToken(ones).burn(allOnes);
         emit BurnOnes(allOnes);
     }
@@ -150,13 +153,15 @@ contract OneSwapBuyback is IOneSwapBuyback {
 
         if (token == _ETH) { // eth -> ones
             uint256 ethAmt = address(this).balance;
-            require(ethAmt > 0, "OneSwapBuyback: NO_ETH");
-            
+            // require(ethAmt > 0, "OneSwapBuyback: NO_ETH");
+            if (ethAmt == 0) { return; }
+
             IOneSwapRouter(router).swapToken{value: ethAmt}(
                 _ETH, ethAmt, 0, path, address(this), _MAX_UINT256);
         } else { // main token -> ones
             uint256 tokenAmt = IERC20(token).balanceOf(address(this));
-            require(tokenAmt > 0, "OneSwapBuyback: NO_MAIN_TOKENS");
+            // require(tokenAmt > 0, "OneSwapBuyback: NO_MAIN_TOKENS");
+            if (tokenAmt == 0) { return; }
 
             IERC20(token).approve(router, 0);
             IERC20(token).approve(router, tokenAmt);

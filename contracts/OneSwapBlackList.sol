@@ -44,7 +44,8 @@ abstract contract OneSwapBlackList is IOneSwapBlackList {
     }
 
     function updateOwner() public override onlyNewOwner {
-        _setOwner(_newOwner);
+        _owner = _newOwner;
+        emit OwnerChanged(_newOwner);
     }
 
     function addBlackLists(address[] calldata _evilUser) public override onlyOwner {
@@ -61,10 +62,4 @@ abstract contract OneSwapBlackList is IOneSwapBlackList {
         emit RemovedBlackLists(_clearedUser);
     }
 
-    function _setOwner(address ownerToSet) internal {
-        if (ownerToSet != address(0)) {
-            _owner = ownerToSet;
-            emit OwnerChanged(ownerToSet);
-        }
-    }
 }

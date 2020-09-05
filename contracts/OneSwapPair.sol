@@ -522,7 +522,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
 
     function removeOrders(uint[] calldata rmList) external override lock {
         uint[5] memory proxyData;
-    uint expectedCallDataSize = 4+32*(ProxyData.COUNT+2+rmList.length);
+        uint expectedCallDataSize = 4+32*(ProxyData.COUNT+2+rmList.length);
         ProxyData.fill(proxyData, expectedCallDataSize);
         for(uint i = 0; i < rmList.length; i++) {
             uint rmInfo = rmList[i];
@@ -771,7 +771,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         return 0;
     }
 
-    function calcStockAndMoney(uint64 amount, uint32 price32) external override returns (uint stockAmount, uint moneyAmount) {
+    function calcStockAndMoney(uint64 amount, uint32 price32) external pure override returns (uint stockAmount, uint moneyAmount) {
         uint[5] memory proxyData;
         ProxyData.fill(proxyData, 4+32*(ProxyData.COUNT+2));
         (stockAmount, moneyAmount, ) = _calcStockAndMoney(amount, price32, proxyData);
@@ -1015,7 +1015,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         }
         if(currTokenCanTrade > ctx.amountIntoPool) {
             uint diffTokenCanTrade = currTokenCanTrade - ctx.amountIntoPool;
-            bool allDeal = diffTokenCanTrade > ctx.remainAmount;
+            bool allDeal = diffTokenCanTrade >= ctx.remainAmount;
             if(allDeal) {
                 diffTokenCanTrade = ctx.remainAmount;
             }
@@ -1047,6 +1047,8 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
 
         _emitOrderChanged(orderInBook.amount, uint64(stockAmount), currID, isBuy);
         orderInBook.amount -= uint64(stockAmount);
+	emit NewMarketOrder(stockAmount);
+	emit NewMarketOrder(orderInBook.amount);
         if(isBuy) { //subtraction cannot overflow: moneyTrans and stockTrans are calculated from remainAmount
             ctx.remainAmount -= moneyTrans;
         } else {
@@ -1083,7 +1085,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
         // for buy-order, it's stock amount; for sell-order, it's money amount
         uint amountToTaker = outAmount + otherToTaker;
         require(amountToTaker < uint(1<<112), "OneSwap: AMOUNT_TOO_LARGE");
-        uint fee = amountToTaker * feeBPS / 10000;
+        uint fee = (amountToTaker * feeBPS + 9999) / 10000;
         amountToTaker -= fee;
 
         if(isBuy) {

@@ -78,5 +78,5 @@ interface IOneSwapPair {
     function addMarketOrder(address inputToken, address sender, uint112 inAmount) external payable returns (uint);
 
     // Given the 'amount' of stock and decimal floating point price 'price32', calculate the 'stockAmount' and 'moneyAmount' to be traded
-    function calcStockAndMoney(uint64 amount, uint32 price32) external returns (uint stockAmount, uint moneyAmount);
+    function calcStockAndMoney(uint64 amount, uint32 price32) external pure returns (uint stockAmount, uint moneyAmount);
 }

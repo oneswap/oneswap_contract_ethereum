@@ -18,7 +18,7 @@ contract SupervisedSend is ISupervisedSend {
     mapping(bytes32 => mapping (uint=> supervisedSendInfo)) public supervisedSendInfos;
 
     modifier afterUnlockTime(uint32 unlockTime) {
-        require(uint(unlockTime) * 3600 < block.timestamp, "SupervisedSend: NOT_ARRIVING_UNLOCKTIME_YET");
+        require(uint(unlockTime) * 3600 <= block.timestamp, "SupervisedSend: NOT_ARRIVING_UNLOCKTIME_YET");
         _;
     }
 
@@ -27,14 +27,14 @@ contract SupervisedSend is ISupervisedSend {
         _;
     }
 
-    function supervisedSend(address to, address supervisor, uint112 reward, uint112 amount, address token, uint32 unlockTime, uint256 serialNumber) public override {
+    function supervisedSend(address to, address supervisor, uint112 reward, uint112 amount, address token, uint32 unlockTime, uint256 serialNumber) public override beforeUnlockTime(unlockTime){
         bytes32 key = _getSupervisedSendKey(msg.sender, to, supervisor, token, unlockTime);
         supervisedSendInfo memory info = supervisedSendInfos[key][serialNumber];
         require(amount > reward, "SupervisedSend: TOO_MUCH_REWARDS");
         // prevent duplicated send
         require(info.amount == 0 && info.reward == 0, "SupervisedSend: INFO_ALREADY_EXISTS");
-        _safeTransferToMe(token, msg.sender, uint(amount).add(uint(reward)));
         supervisedSendInfos[key][serialNumber]= supervisedSendInfo(amount, reward);
+        _safeTransferToMe(token, msg.sender, uint(amount).add(uint(reward)));
         emit SupervisedSend(msg.sender, to, supervisor, token, amount, reward, unlockTime);
     }
 

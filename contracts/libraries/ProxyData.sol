@@ -45,7 +45,7 @@ library ProxyData {
         return uint8(proxyData[INDEX_OTHER]>>OFFSET_IS_ONLY_SWAP) != 0;
     }
 
-    function fill(uint[5] memory proxyData, uint expectedCallDataSize) internal {
+    function fill(uint[5] memory proxyData, uint expectedCallDataSize) internal pure {
         uint size;
         // solhint-disable-next-line no-inline-assembly
         assembly {
