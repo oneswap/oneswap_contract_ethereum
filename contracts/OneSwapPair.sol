@@ -1047,8 +1047,6 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
 
         _emitOrderChanged(orderInBook.amount, uint64(stockAmount), currID, isBuy);
         orderInBook.amount -= uint64(stockAmount);
-	emit NewMarketOrder(stockAmount);
-	emit NewMarketOrder(orderInBook.amount);
         if(isBuy) { //subtraction cannot overflow: moneyTrans and stockTrans are calculated from remainAmount
             ctx.remainAmount -= moneyTrans;
         } else {
