@@ -370,11 +370,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
     }
 
     function symbol() external override returns (string memory) {
-        uint[5] memory proxyData;
-        ProxyData.fill(proxyData, 4+32*(ProxyData.COUNT+0));
-        string memory s = IERC20(ProxyData.stock(proxyData)).symbol();
-        string memory m = IERC20(ProxyData.money(proxyData)).symbol();
-        return string(abi.encodePacked(s, "/", m, "-Share"));  //to concat strings
+        return "ONE";
     }
 
     // when emitting events, solidity's ABI pads each entry to uint256, which is so wasteful
