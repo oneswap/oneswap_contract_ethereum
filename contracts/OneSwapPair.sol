@@ -32,7 +32,7 @@ abstract contract OneSwapERC20 is IOneSwapERC20 {
         _unlocked = 1;
     }
 
-    string private constant _NAME = "OneSwap-Liquidity-Share";
+    string private constant _NAME = "OneSwap-Share";
     uint8 private constant _DECIMALS = 18;
     uint  public override totalSupply;
     mapping(address => uint) public override balanceOf;
@@ -209,6 +209,7 @@ abstract contract OneSwapPool is OneSwapERC20, IOneSwapPool {
 
     // safely transfer ERC20 tokens, or ETH (when token==0)
     function _safeTransfer(address token, address to, uint value, address ones) internal {
+        if(value==0) {return;}
         if(token==address(0)) {
             // limit gas to 9000 to prevent gastoken attacks
             // solhint-disable-next-line avoid-low-level-calls 
@@ -370,7 +371,19 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
     }
 
     function symbol() external override returns (string memory) {
-        return "ONE";
+        uint[5] memory proxyData;
+        ProxyData.fill(proxyData, 4+32*(ProxyData.COUNT+0));
+        string memory s = "ETH";
+        address stock = ProxyData.stock(proxyData);
+        if(stock != address(0)) {
+            s = IERC20(stock).symbol();
+        }
+        string memory m = "ETH";
+        address money = ProxyData.money(proxyData);
+        if(money != address(0)) {
+            m = IERC20(money).symbol();
+        }
+        return string(abi.encodePacked(s, "/", m));  //to concat strings
     }
 
     // when emitting events, solidity's ABI pads each entry to uint256, which is so wasteful
@@ -1213,47 +1226,6 @@ contract OneSwapPairProxy {
             case 0 { revert(ptr, size) }
             default { return(ptr, size) }
         }
-    }
-}
-
-// this contract is only used for test
-contract OneSwapFactoryPXYTEST {
-    address public feeTo;
-    address public feeToSetter;
-    address public pairLogic;
-
-    mapping(address => mapping(address => address)) public pairs;
-    address[] public allPairs;
-
-    event PairCreated(address indexed stock, address indexed money, address pair, uint);
-
-    function createPair(address stock, address money, address impl) external {
-        require(stock != money, "OneSwap: IDENTICAL_ADDRESSES");
-        require(stock != address(0) || money != address(0), "OneSwap: ZERO_ADDRESS");
-        require(pairs[stock][money] == address(0), "OneSwap: PAIR_EXISTS"); // single check is sufficient
-        uint8 dec;
-        if (stock == address(0)){
-            dec = 18;
-        } else{
-            dec = IERC20(stock).decimals();
-        }
-        require(25 >= dec && dec >= 6, "OneSwap: DECIMALS_NOT_SUPPORTED");
-        dec -= 6;
-        bytes32 salt = keccak256(abi.encodePacked(stock, money));
-        OneSwapPairProxy oneswap = new OneSwapPairProxy{salt: salt}(stock, money, false, 1, 1, 1, address(0));
-        address pair = address(oneswap);
-        pairs[stock][money] = pair;
-        allPairs.push(pair);
-        pairLogic = impl;
-        emit PairCreated(stock, money, pair, allPairs.length);
-    }
-
-    function allPairsLength() external view returns (uint) {
-        return allPairs.length;
-    }
-
-    function feeBPS() external pure returns (uint32) {
-        return 30;
     }
 }
 
