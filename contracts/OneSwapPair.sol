@@ -683,7 +683,7 @@ contract OneSwapPair is OneSwapPool, IOneSwapPair {
     }
 
     // to query the first sell price, the first buy price and the price of pool
-    function getPrices() external override returns (
+    function getPrices() external override view returns (
         uint firstSellPriceNumerator,
         uint firstSellPriceDenominator,
         uint firstBuyPriceNumerator,

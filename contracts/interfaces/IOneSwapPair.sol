@@ -45,7 +45,7 @@ interface IOneSwapPair {
     
     // Return three prices in rational number form, i.e., numerator/denominator.
     // They are: the first sell order's price; the first buy order's price; the current price of the AMM pool.
-    function getPrices() external returns (
+    function getPrices() external view returns (
         uint firstSellPriceNumerator,
         uint firstSellPriceDenominator,
         uint firstBuyPriceNumerator,
